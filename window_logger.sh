@@ -211,13 +211,15 @@ main() {
     while true; do
         local current_window_id
         current_window_id=$(get_active_window_id)
+        local current_window_title
+        current_window_title=$(get_window_title "$current_window_id" | tr -d '\n' | tr -d '\r' | sed 's/,/ /g')
 
-        if [[ -n "$current_window_id" && "$current_window_id" != "$previous_window_id" ]]; then
+        if [[ -n "$current_window_id" && ("$current_window_id" != "$previous_window_id" || "$current_window_title" != "$previous_window_title") ]]; then
             log_previous_activity
 
             previous_window_id="$current_window_id"
             previous_app_name=$(get_process_name "$current_window_id")
-            previous_window_title=$(get_window_title "$current_window_id" | tr -d '\n' | tr -d '\r' | sed 's/,/ /g')
+            previous_window_title=$current_window_title
             start_time=$(date +%s)
             if declare -f on_new_activity > /dev/null; then
                 on_new_activity "$previous_app_name" "$previous_window_title"
