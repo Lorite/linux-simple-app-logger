@@ -66,7 +66,7 @@ log_message() {
     local time
     local duration_formatted
 
-    date=$(date +"%m/%d/%y")
+    date=$(date +"%Y-%m-%d")
     time=$(date +"%H:%M:%S")
 
     # Format duration from seconds to H:M:S
