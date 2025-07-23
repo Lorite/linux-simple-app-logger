@@ -2,15 +2,27 @@
 
 # --- Configuration ---
 
-readonly OUTPUT_FOLDER="${LINUX_SIMPLE_APP_LOGGER_LOGS_FOLDER:-.}"
-readonly TODAY=$(date +"%Y-%m-%d")
-readonly OUTPUT_FILE="$OUTPUT_FOLDER/$TODAY/LORI_Activity_$TODAY.csv"
-readonly SLEEP_INTERVAL=1 # in seconds
-readonly MIN_LOG_DURATION=2 # in seconds
-readonly PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
-readonly WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
+# Default values
+OUTPUT_FOLDER="."
+SLEEP_INTERVAL=1 # in seconds
+MIN_LOG_DURATION=2 # in seconds
+PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
+WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
 
 # --- Functions ---
+
+usage() {
+    echo "Usage: $0 [options]"
+    echo
+    echo "Options:"
+    echo "  -o, --output-folder FOLDER      Set the output folder for logs. Default is '.'."
+    echo "  -s, --sleep-interval SECONDS    Set the sleep interval in seconds. Default is 1."
+    echo "  -m, --min-log-duration SECONDS  Set the minimum duration for an activity to be logged. Default is 2."
+    echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore."
+    echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore."
+    echo "  -h, --help                      Show this help message."
+    exit 0
+}
 
 check_dependencies() {
     for cmd in xdotool xprop; do
@@ -129,6 +141,42 @@ cleanup() {
 # --- Main Logic ---
 
 main() {
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            -o|--output-folder)
+                OUTPUT_FOLDER="$2"
+                shift 2
+                ;;
+            -s|--sleep-interval)
+                SLEEP_INTERVAL="$2"
+                shift 2
+                ;;
+            -m|--min-log-duration)
+                MIN_LOG_DURATION="$2"
+                shift 2
+                ;;
+            -p|--process-blacklist)
+                PROCESS_BLACKLIST_REGEX="$2"
+                shift 2
+                ;;
+            -w|--window-blacklist)
+                WINDOW_BLACKLIST_REGEX="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                usage
+                ;;
+        esac
+    done
+
+    # These are now dynamic based on arguments
+    readonly TODAY=$(date +"%Y-%m-%d")
+    readonly OUTPUT_FILE="$OUTPUT_FOLDER/$TODAY/LORI_Activity_$TODAY.csv"
+
     # Initialize with the current active window at script start
     previous_window_id=$(get_active_window_id)
     previous_window_title=$(get_window_title "$previous_window_id" | tr -d '\n' | tr -d '\r' | sed 's/,/ /g')
@@ -160,6 +208,20 @@ main() {
 
 # --- Script Execution ---
 
+_logger_completions() {
+    local cur_word prev_word
+    cur_word="${COMP_WORDS[COMP_CWORD]}"
+    prev_word="${COMP_WORDS[COMP_CWORD-1]}"
+    local opts="--output-folder --sleep-interval --min-log-duration --process-blacklist --window-blacklist --help"
+
+    if [[ ${cur_word} == -* ]]; then
+        COMPREPLY=( $(compgen -W "${opts}" -- ${cur_word}) )
+        return 0
+    fi
+}
+
+complete -F _logger_completions window_logger.sh
+
 trap cleanup SIGINT SIGTERM
 
 # Global variables for cleanup handler
@@ -170,4 +232,4 @@ start_time=0
 
 check_dependencies
 
-main
+main "$@"

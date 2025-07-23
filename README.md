@@ -8,10 +8,10 @@ A simple Bash script to monitor and log active window information on a Linux des
 - Logs the title of the active window.
 - Calculates and records the duration of time spent on each window.
 - Outputs data to a CSV file, organized by date.
-- Configurable output directory via an environment variable.
-- Blacklists specific processes to avoid logging them using a regex pattern.
-- Blacklists specific window titles to avoid logging them using a regex pattern.
+- Configuration via command-line arguments.
+- Blacklists specific processes and/or window titles to avoid logging them using a regex pattern.
 - Gracefully handles script termination (`Ctrl+C`) to log the final activity.
+- Tab completion for command-line arguments.
 
 ## Dependencies
 
@@ -56,17 +56,39 @@ The script will print a message indicating that it has started and where it is l
 
 To stop the logger, press `Ctrl+C` in the terminal where the script is running.
 
-### Configuration
-
-By default, the script saves the log files in a folder named after the current date within the same directory where the script is located.
-
-You can customize the output folder by setting the `LINUX_SIMPLE_APP_LOGGER_LOGS_FOLDER` environment variable.
-There are some other settings you can adjust in the script, such as `SLEEP_INTERVAL` and `MIN_LOG_DURATION`, which control how often the script checks for active windows and the minimum duration for logging an activity, respectively. I can make them adjustable via environment variables as well if you prefer.
+For a full list of options, you can use the `--help` flag:
 
 ```bash
-export LINUX_SIMPLE_APP_LOGGER_LOGS_FOLDER="/home/user/my-activity-logs"
-./window_logger.sh
+./window_logger.sh --help
 ```
+
+### Configuration
+
+You can configure the script's behavior using command-line arguments.
+
+| Argument                | Description                                                              | Default |
+| ----------------------- | ------------------------------------------------------------------------ | ------- |
+| `-o`, `--output-folder`   | Set the output folder for logs.                                          | `.`     |
+| `-s`, `--sleep-interval`  | Set the sleep interval in seconds.                                       | `1`     |
+| `-m`, `--min-log-duration`| Set the minimum duration for an activity to be logged.                   | `2`     |
+| `-p`, `--process-blacklist`| Regex to match process names to ignore.                                  | `""`    |
+| `-w`, `--window-blacklist`| Regex to match window titles to ignore.                                  | `""`    |
+| `-h`, `--help`            | Show the help message.                                                   |         |
+
+#### Example
+
+Here is an example of how to run the script with custom settings:
+
+```bash
+./window_logger.sh -o ~/activity-logs -s 5 -m 10 -p "gnome-shell|plank" -w "Brave"
+```
+
+This command will:
+- Save logs to the `~/activity-logs` directory.
+- Check for the active window every `5` seconds.
+- Only log activities that last longer than `10` seconds.
+- Ignore any activity from processes named `gnome-shell` or `plank`.
+- Ignore any window with "Brave" in its title.
 
 ## Output Format
 
@@ -76,30 +98,28 @@ The CSV file has the following columns:
 
 - `App name`: The name of the process that owns the window (e.g., `brave`, `code`, `gnome-terminal`).
 - `Window Title`: The title of the active window.
-- `Date`: The date of the log entry (`MM/DD/YY`).
+- `Date`: The date of the log entry (`YYYY-MM-DD`).
 - `Time`: The time the window became inactive (`HH:MM:SS`).
 - `Duration`: The total time the window was active (`HH:MM:SS`).
 
 ### Example
 
-###
-
 ```csv
-"ptyxis"," ./window_logger.sh","07/23/25","00:06:26","00:00:05"
-"brave"," linux show the current opened window binary name - Buscar con Google - Brave","07/23/25","00:06:41","00:00:15"
-"nemo"," daily - /home/lori/git/lorite-obsidian-notes/_android-appusage/LaptopITU/daily","07/23/25","00:06:46","00:00:05"
-"obsidian"," Linux App Logger with Automate and STT - lorite-obsidian-notes - Obsidian v1.8.10","07/23/25","00:07:06","00:00:20"
+"ptyxis"," ./window_logger.sh","2025-07-23","00:06:26","00:00:05"
+"brave"," linux show the current opened window binary name - Buscar con Google - Brave","2025-07-23","00:06:41","00:00:15"
+"nemo"," daily - /home/lori/git/lorite-obsidian-notes/_android-appusage/LaptopITU/daily","2025-07-23","00:06:46","00:00:05"
+"obsidian"," Linux App Logger with Automate and STT - lorite-obsidian-notes - Obsidian v1.8.10","2025-07-23","00:07:06","00:00:20"
 ^C
 Stopping window logger.
-"ptyxis"," ./window_logger.sh","07/23/25","00:07:17","00:00:11"
+"ptyxis"," ./window_logger.sh","2025-07-23","00:07:17","00:00:11"
 ```
 
 which corresponds to the following table:
 
-| App name | Window Title                                                                      | Date     | Time     | Duration |
-| -------- | --------------------------------------------------------------------------------- | -------- | -------- | -------- |
-| ptyxis   | ./window_logger.sh                                                                | 07/23/25 | 00:06:26 | 00:00:05 |
-| brave    | linux show the current opened window binary name - Buscar con Google - Brave      | 07/23/25 | 00:06:41 | 00:00:15 |
-| nemo     | daily - /home/lori/git/lorite-obsidian-notes/\_android-appusage/LaptopITU/daily   | 07/23/25 | 00:06:46 | 00:00:05 |
-| obsidian | Linux App Logger with Automate and STT - lorite-obsidian-notes - Obsidian v1.8.10 | 07/23/25 | 00:07:06 | 00:00:20 |
-| ptyxis   | ./window_logger.sh                                                                | 07/23/25 | 00:07:17 | 00:00:11 |
+| App name | Window Title                                                                      | Date       | Time     | Duration |
+| -------- | --------------------------------------------------------------------------------- | ---------- | -------- | -------- |
+| ptyxis   | ./window_logger.sh                                                                | 2025-07-23 | 00:06:26 | 00:00:05 |
+| brave    | linux show the current opened window binary name - Buscar con Google - Brave      | 2025-07-23 | 00:06:41 | 00:00:15 |
+| nemo     | daily - /home/lori/git/lorite-obsidian-notes/_android-appusage/LaptopITU/daily      | 2025-07-23 | 00:06:46 | 00:00:05 |
+| obsidian | Linux App Logger with Automate and STT - lorite-obsidian-notes - Obsidian v1.8.10 | 2025-07-23 | 00:07:06 | 00:00:20 |
+| ptyxis   | ./window_logger.sh                                                                | 2025-07-23 | 00:07:17 | 00:00:11 |
