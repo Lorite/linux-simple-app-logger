@@ -62,6 +62,52 @@ For a full list of options, you can use the `--help` flag:
 ./window_logger.sh --help
 ```
 
+### Running on Startup
+
+To have the logger start automatically when you log in to your desktop, you can add it to your system's startup applications. The exact steps may vary depending on your desktop environment, but here is a general guide that works for most environments.
+
+**1. Create a `.desktop` file**
+
+Create a file named `window-logger.desktop` in `~/.config/autostart/` with the following content. Make sure to replace `/path/to/window_logger.sh` with the absolute path to the `window_logger.sh` script.
+
+```ini
+[Desktop Entry]
+Name=Window Activity Logger
+Comment=Log active window information
+Exec=/path/to/window_logger.sh
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=Utility;
+```
+
+You can also add any command-line arguments to the `Exec` line. For example:
+
+```ini
+Exec=/path/to/window_logger.sh -o /home/user/activity-logs -s 5
+```
+
+**2. Make the `.desktop` file executable**
+
+Some systems may require the `.desktop` file to be executable:
+
+```bash
+chmod +x ~/.config/autostart/window-logger.desktop
+```
+
+Now, the script should start automatically the next time you log in.
+
+**GNOME Desktop Environment**
+
+If you are using GNOME, you can also use the "Startup Applications" tool:
+1.  Open "Startup Applications" (you can search for it in the Activities overview).
+2.  Click "Add".
+3.  Fill in the details:
+    -   **Name:** Window Activity Logger
+    -   **Command:** `/path/to/window_logger.sh` (with any arguments you need)
+    -   **Comment:** Log active window information
+4.  Click "Add".
+
 ### Configuration
 
 You can configure the script's behavior using command-line arguments.
