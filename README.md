@@ -141,10 +141,11 @@ This command will:
 
 You can extend the logger's functionality by providing a custom script file using the `-c` or `--custom-script` argument. This script will be sourced at startup.
 
-If the custom script defines a function named `on_new_activity`, this function will be called every time a new activity is logged. The function will receive three arguments:
-1.  `app_name`: The name of the application process.
-2.  `window_title`: The title of the window.
-3.  `duration`: The duration the window was active, in seconds.
+If the custom script defines a function named `on_finished_activity`, this function will be called every time a new activity is logged. The function will receive three arguments:
+
+*   `app_name`: The name of the application (e.g., "Brave").
+*   `window_title`: The title of the window.
+*   `duration`: The duration of the activity in seconds.
 
 #### Example Custom Script
 
@@ -153,7 +154,7 @@ Here is an example of a `custom_script.sh` that sends a notification whenever a 
 ```bash
 #!/bin/bash
 
-on_new_activity() {
+on_finished_activity() {
     local app_name="$1"
     local window_title="$2"
     local duration="$3"

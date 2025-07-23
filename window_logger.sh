@@ -98,8 +98,8 @@ log_previous_activity() {
         if [[ $duration -gt $MIN_LOG_DURATION ]]; then
             if ! is_blacklisted "$previous_app_name" "$previous_window_title"; then
                 log_message "$previous_app_name" "$previous_window_title" "$duration"
-                if declare -f on_new_activity > /dev/null; then
-                    on_new_activity "$previous_app_name" "$previous_window_title" "$duration"
+                if declare -f on_finished_activity > /dev/null; then
+                    on_finished_activity "$previous_app_name" "$previous_window_title" "$duration"
                 fi
             fi
         fi
