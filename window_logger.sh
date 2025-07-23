@@ -8,6 +8,7 @@ SLEEP_INTERVAL=1 # in seconds
 MIN_LOG_DURATION=2 # in seconds
 PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
 WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
+CUSTOM_SCRIPT_FILE=""        # Path to a custom script file to source.
 
 # --- Functions ---
 
@@ -20,6 +21,7 @@ usage() {
     echo "  -m, --min-log-duration SECONDS  Set the minimum duration for an activity to be logged. Default is 2."
     echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore."
     echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore."
+    echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source."
     echo "  -h, --help                      Show this help message."
     exit 0
 }
@@ -96,6 +98,9 @@ log_previous_activity() {
         if [[ $duration -gt $MIN_LOG_DURATION ]]; then
             if ! is_blacklisted "$previous_app_name" "$previous_window_title"; then
                 log_message "$previous_app_name" "$previous_window_title" "$duration"
+                if declare -f on_new_activity > /dev/null; then
+                    on_new_activity "$previous_app_name" "$previous_window_title" "$duration"
+                fi
             fi
         fi
     fi
@@ -163,6 +168,10 @@ main() {
                 WINDOW_BLACKLIST_REGEX="$2"
                 shift 2
                 ;;
+            -c|--custom-script)
+                CUSTOM_SCRIPT_FILE="$2"
+                shift 2
+                ;;
             -h|--help)
                 usage
                 ;;
@@ -172,6 +181,16 @@ main() {
                 ;;
         esac
     done
+
+    if [[ -n "$CUSTOM_SCRIPT_FILE" ]]; then
+        if [[ -f "$CUSTOM_SCRIPT_FILE" ]]; then
+            # shellcheck source=/dev/null
+            source "$CUSTOM_SCRIPT_FILE"
+        else
+            echo "Error: Custom script file '$CUSTOM_SCRIPT_FILE' not found." >&2
+            exit 1
+        fi
+    fi
 
     # These are now dynamic based on arguments
     readonly TODAY=$(date +"%Y-%m-%d")
@@ -212,7 +231,7 @@ _logger_completions() {
     local cur_word prev_word
     cur_word="${COMP_WORDS[COMP_CWORD]}"
     prev_word="${COMP_WORDS[COMP_CWORD-1]}"
-    local opts="--output-folder --sleep-interval --min-log-duration --process-blacklist --window-blacklist --help"
+    local opts="--output-folder --sleep-interval --min-log-duration --process-blacklist --window-blacklist --custom-script --help"
 
     if [[ ${cur_word} == -* ]]; then
         COMPREPLY=( $(compgen -W "${opts}" -- ${cur_word}) )

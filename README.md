@@ -73,6 +73,7 @@ You can configure the script's behavior using command-line arguments.
 | `-m`, `--min-log-duration`| Set the minimum duration for an activity to be logged.                   | `2`     |
 | `-p`, `--process-blacklist`| Regex to match process names to ignore.                                  | `""`    |
 | `-w`, `--window-blacklist`| Regex to match window titles to ignore.                                  | `""`    |
+| `-c`, `--custom-script`   | Path to a custom script file to source.                                  | `""`    |
 | `-h`, `--help`            | Show the help message.                                                   |         |
 
 #### Example
@@ -89,6 +90,39 @@ This command will:
 - Only log activities that last longer than `10` seconds.
 - Ignore any activity from processes named `gnome-shell` or `plank`.
 - Ignore any window with "Brave" in its title.
+
+### Custom Script
+
+You can extend the logger's functionality by providing a custom script file using the `-c` or `--custom-script` argument. This script will be sourced at startup.
+
+If the custom script defines a function named `on_new_activity`, this function will be called every time a new activity is logged. The function will receive three arguments:
+1.  `app_name`: The name of the application process.
+2.  `window_title`: The title of the window.
+3.  `duration`: The duration the window was active, in seconds.
+
+#### Example Custom Script
+
+Here is an example of a `custom_script.sh` that sends a notification whenever a new activity is logged:
+
+```bash
+#!/bin/bash
+
+on_new_activity() {
+    local app_name="$1"
+    local window_title="$2"
+    local duration="$3"
+
+    notify-send "New Activity Logged" "App: $app_name\nTitle: $window_title\nDuration: $duration seconds"
+}
+```
+
+You would run the main script like this:
+
+```bash
+./window_logger.sh -c /path/to/custom_script.sh
+```
+
+Feel free to copy the example custom script above into your own file and modify it to suit your needs. I git ignored "my_custom_script.sh" so you can create your own without worrying about it being tracked by Git.
 
 ## Output Format
 
