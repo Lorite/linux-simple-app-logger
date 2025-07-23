@@ -7,6 +7,8 @@ readonly TODAY=$(date +"%Y-%m-%d")
 readonly OUTPUT_FILE="$OUTPUT_FOLDER/$TODAY/LORI_Activity_$TODAY.csv"
 readonly SLEEP_INTERVAL=1 # in seconds
 readonly MIN_LOG_DURATION=2 # in seconds
+readonly PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
+readonly WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
 
 # --- Functions ---
 
@@ -58,6 +60,44 @@ get_process_name() {
     xprop -id "$window_id" _NET_WM_PID 2>/dev/null | cut -d '=' -f 2 | xargs -I {} ps -p {} -o comm= | tr -d '\n' | tr -d '\r' | sed 's/,/ /g'
 }
 
+is_blacklisted() {
+    local app_name="$1"
+    local window_title="$2"
+
+    if [[ -n "$PROCESS_BLACKLIST_REGEX" ]] && [[ "$app_name" =~ $PROCESS_BLACKLIST_REGEX ]]; then
+        return 0
+    fi
+
+    if [[ -n "$WINDOW_BLACKLIST_REGEX" ]] && [[ "$window_title" =~ $WINDOW_BLACKLIST_REGEX ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+log_previous_activity() {
+    if [[ -n "$previous_window_title" ]]; then
+        local end_time
+        end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+
+        if [[ $duration -gt $MIN_LOG_DURATION ]]; then
+            if ! is_blacklisted "$previous_app_name" "$previous_window_title"; then
+                log_message "$previous_app_name" "$previous_window_title" "$duration"
+            fi
+        fi
+    fi
+}
+
+format_duration() {
+    local duration_seconds="$1"
+    local h m s
+    h=$((duration_seconds / 3600))
+    m=$(((duration_seconds % 3600) / 60))
+    s=$((duration_seconds % 60))
+    printf "%02d:%02d:%02d" "$h" "$m" "$s"
+}
+
 log_message() {
     local app_name="$1"
     local window_title="$2"
@@ -69,12 +109,7 @@ log_message() {
     date=$(date +"%Y-%m-%d")
     time=$(date +"%H:%M:%S")
 
-    # Format duration from seconds to H:M:S
-    local h m s
-    h=$((duration_seconds / 3600))
-    m=$(((duration_seconds % 3600) / 60))
-    s=$((duration_seconds % 60))
-    duration_formatted=$(printf "%02d:%02d:%02d" "$h" "$m" "$s")
+    duration_formatted=$(format_duration "$duration_seconds")
 
     # Check if the output file exists, if not, create it with a header row
     if [[ ! -f "$OUTPUT_FILE" ]]; then
@@ -87,14 +122,7 @@ log_message() {
 cleanup() {
     echo -e "\nStopping window logger."
     # Log the duration of the last activity before exiting
-    if [[ -n "$previous_window_title" ]]; then
-        local end_time
-        end_time=$(date +%s)
-        local duration=$((end_time - start_time))
-        if [[ $duration -gt $MIN_LOG_DURATION ]]; then
-            log_message "$previous_app_name" "$previous_window_title" "$duration"
-        fi
-    fi
+    log_previous_activity
     exit 0
 }
 
@@ -118,13 +146,7 @@ main() {
         current_window_id=$(get_active_window_id)
 
         if [[ -n "$current_window_id" && "$current_window_id" != "$previous_window_id" ]]; then
-            local end_time
-            end_time=$(date +%s)
-            local duration=$((end_time - start_time))
-
-            if [[ -n "$previous_window_title" ]] && [[ $duration -gt $MIN_LOG_DURATION ]]; then
-                log_message "$previous_app_name" "$previous_window_title" "$duration"
-            fi
+            log_previous_activity
 
             previous_window_id="$current_window_id"
             previous_app_name=$(get_process_name "$current_window_id")

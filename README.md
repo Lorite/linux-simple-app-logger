@@ -9,6 +9,8 @@ A simple Bash script to monitor and log active window information on a Linux des
 - Calculates and records the duration of time spent on each window.
 - Outputs data to a CSV file, organized by date.
 - Configurable output directory via an environment variable.
+- Blacklists specific processes to avoid logging them using a regex pattern.
+- Blacklists specific window titles to avoid logging them using a regex pattern.
 - Gracefully handles script termination (`Ctrl+C`) to log the final activity.
 
 ## Dependencies
