@@ -153,12 +153,12 @@ If the custom script defines functions like `on_new_activity` or `on_finished_ac
 
 #### Example Custom Script
 
-There is an example custom script named `custom_script.sh` in the repository. You can use it as a starting point for your own customizations. Feel free to copy the file to `my_custom_script.sh` and modify it as needed. It is not included in the repository by default, so you will need to create it yourself, and it is ignored by Git.
+There is an example custom script named `custom_script.sh` in the `custom_scripts` directory. You can use it as a starting point for your own customizations. Feel free to copy the file to `my_custom_script.sh` and modify it as needed. It is not included in the repository by default, so you will need to create it yourself, and it is ignored by Git.
 
 You would run the main script like this:
 
 ```bash
-./window_logger.sh -c /path/to/custom_script.sh
+./window_logger.sh -c /path/to/custom_scripts/custom_script.sh
 ```
 
 ## Output Format

@@ -8,7 +8,7 @@ SLEEP_INTERVAL=1 # in seconds
 MIN_LOG_DURATION=2 # in seconds
 PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
 WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
-CUSTOM_SCRIPT_FILE="my_custom_script.sh"        # Path to a custom script file to source.
+CUSTOM_SCRIPT_FILE="custom_scripts/my_custom_script.sh"        # Path to a custom script file to source.
 
 # --- Functions ---
 
@@ -21,7 +21,7 @@ usage() {
     echo "  -m, --min-log-duration SECONDS  Set the minimum duration for an activity to be logged. Default is 2."
     echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore. Default is empty."
     echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore. Default is empty."
-    echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source. Default is 'my_custom_script.sh'."
+    echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source. Default is 'custom_scripts/my_custom_script.sh'."
     echo "  -h, --help                      Show this help message."
     exit 0
 }
