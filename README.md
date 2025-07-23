@@ -141,35 +141,25 @@ This command will:
 
 You can extend the logger's functionality by providing a custom script file using the `-c` or `--custom-script` argument. This script will be sourced at startup.
 
-If the custom script defines a function named `on_finished_activity`, this function will be called every time a new activity is logged. The function will receive three arguments:
+If the custom script defines functions like `on_new_activity` or `on_finished_activity`, these functions will be called at the appropriate times.
 
-*   `app_name`: The name of the application (e.g., "Brave").
-*   `window_title`: The title of the window.
-*   `duration`: The duration of the activity in seconds.
+- `on_new_activity` is called when a new window becomes active. It receives two arguments:
+    - `app_name`: The name of the new application.
+    - `window_title`: The title of the new window.
+- `on_finished_activity` is called every time a new activity is logged. The function will receive three arguments:
+    - `app_name`: The name of the application (e.g., "Brave").
+    - `window_title`: The title of the window.
+    - `duration`: The duration of the activity in seconds.
 
 #### Example Custom Script
 
-Here is an example of a `custom_script.sh` that sends a notification whenever a new activity is logged:
-
-```bash
-#!/bin/bash
-
-on_finished_activity() {
-    local app_name="$1"
-    local window_title="$2"
-    local duration="$3"
-
-    notify-send "New Activity Logged" "App: $app_name\nTitle: $window_title\nDuration: $duration seconds"
-}
-```
+There is an example custom script named `custom_script.sh` in the repository. You can use it as a starting point for your own customizations. Feel free to copy the file to `my_custom_script.sh` and modify it as needed. It is not included in the repository by default, so you will need to create it yourself, and it is ignored by Git.
 
 You would run the main script like this:
 
 ```bash
 ./window_logger.sh -c /path/to/custom_script.sh
 ```
-
-Feel free to copy the example custom script above into your own file and modify it to suit your needs. I git ignored "my_custom_script.sh" so you can create your own without worrying about it being tracked by Git.
 
 ## Output Format
 

@@ -8,7 +8,7 @@ SLEEP_INTERVAL=1 # in seconds
 MIN_LOG_DURATION=2 # in seconds
 PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
 WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
-CUSTOM_SCRIPT_FILE=""        # Path to a custom script file to source.
+CUSTOM_SCRIPT_FILE="my_custom_script.sh"        # Path to a custom script file to source.
 
 # --- Functions ---
 
@@ -19,9 +19,9 @@ usage() {
     echo "  -o, --output-folder FOLDER      Set the output folder for logs. Default is '.'."
     echo "  -s, --sleep-interval SECONDS    Set the sleep interval in seconds. Default is 1."
     echo "  -m, --min-log-duration SECONDS  Set the minimum duration for an activity to be logged. Default is 2."
-    echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore."
-    echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore."
-    echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source."
+    echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore. Default is empty."
+    echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore. Default is empty."
+    echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source. Default is 'my_custom_script.sh'."
     echo "  -h, --help                      Show this help message."
     exit 0
 }
@@ -219,6 +219,9 @@ main() {
             previous_app_name=$(get_process_name "$current_window_id")
             previous_window_title=$(get_window_title "$current_window_id" | tr -d '\n' | tr -d '\r' | sed 's/,/ /g')
             start_time=$(date +%s)
+            if declare -f on_new_activity > /dev/null; then
+                on_new_activity "$previous_app_name" "$previous_window_title"
+            fi
         fi
 
         sleep "$SLEEP_INTERVAL"
