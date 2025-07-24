@@ -218,6 +218,9 @@ cleanup() {
     echo -e "\nStopping window logger."
     # Log the duration of the last activity before exiting
     log_previous_activity
+    if declare -f on_cleanup > /dev/null; then
+        on_cleanup
+    fi
     exit 0
 }
 
@@ -306,7 +309,7 @@ main() {
         fi
 
         if declare -f on_loop_interval > /dev/null; then
-            on_loop_interval # user-defined external function call
+            on_loop_interval "$current_app_name" "$current_window_title" # user-defined external function call
         fi
 
         handle_media_activity

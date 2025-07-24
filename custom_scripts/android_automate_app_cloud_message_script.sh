@@ -4,6 +4,10 @@
 # It is sourced by the main script and can be used to define custom functions that are called
 # at different points in the main script's execution.
 
+# --- Configuration ---
+ACTIVITY_PERCENTAGE_THRESHOLD=50 # Stop activity if active for less than this percentage
+declare -A running_activities
+
 # --- Helper Functions ---
 
 # get_activity_info
@@ -22,7 +26,7 @@ get_activity_info() {
 
     case "$app_name" in
         "Media")
-            activity="Media"
+            activity="YouTube"
             comment="$window_title"
             ;;
         "firefox"|"chrome"|"brave")
@@ -151,18 +155,23 @@ on_new_activity() {
     activity_info=$(get_activity_info "$app_name" "$window_title")
     local extra_activity_name
     extra_activity_name=$(echo "$activity_info" | sed -n '1p')
-    local extra_record_comment
-    extra_record_comment=$(echo "$activity_info" | sed -n '2p')
 
-    if [[ -z "$extra_activity_name" && -z "$extra_record_comment" ]]; then
+    if [[ -z "$extra_activity_name" ]]; then
         return
     fi
 
-    local json_payload
-    json_payload="$(build_json_payload "start" "$app_name" "$window_title")"
-    echo "$json_payload" >&2
-
-    send_notification "$json_payload"
+    if [[ -z "${running_activities[$extra_activity_name]}" ]]; then
+        echo "Starting new activity group: $extra_activity_name"
+        # Store start time and initialize active duration
+        local start_time
+        start_time=$(date +%s)
+        running_activities["$extra_activity_name"]="$start_time:0"
+        
+        local json_payload
+        json_payload="$(build_json_payload "start" "$app_name" "$window_title")"
+        echo "$json_payload" >&2
+        send_notification "$json_payload"
+    fi
 }
 
 # on_finished_activity
@@ -183,18 +192,19 @@ on_finished_activity() {
     activity_info=$(get_activity_info "$app_name" "$window_title")
     local extra_activity_name
     extra_activity_name=$(echo "$activity_info" | sed -n '1p')
-    local extra_record_comment
-    extra_record_comment=$(echo "$activity_info" | sed -n '2p')
 
-    if [[ -z "$extra_activity_name" && -z "$extra_record_comment" ]]; then
+    if [[ -z "$extra_activity_name" ]]; then
         return
     fi
 
-    local json_payload
-    json_payload=$(build_json_payload "stop" "$app_name" "$window_title")
-    echo "$json_payload" >&2
-    
-    send_notification "$json_payload"
+    if [[ -n "${running_activities[$extra_activity_name]}" ]]; then
+        local state_data="${running_activities[$extra_activity_name]}"
+        local start_time="${state_data%%:*}"
+        local active_duration="${state_data##*:}"
+        
+        local new_duration=$((active_duration + duration))
+        running_activities["$extra_activity_name"]="$start_time:$new_duration"
+    fi
 }
 
 # on_loop_interval
@@ -202,5 +212,59 @@ on_finished_activity() {
 # This function is called on each loop interval of the main script.
 #
 on_loop_interval() {
-    :
+    local current_app_name="$1"
+    local current_window_title="$2"
+    local current_time
+    current_time=$(date +%s)
+
+    local current_activity_info
+    current_activity_info=$(get_activity_info "$current_app_name" "$current_window_title")
+    local current_extra_activity_name
+    current_extra_activity_name=$(echo "$current_activity_info" | sed -n '1p')
+
+    for activity_name in "${!running_activities[@]}"; do
+        # If the activity is the current one, skip the check
+        if [[ "$activity_name" == "$current_extra_activity_name" ]]; then
+            continue
+        fi
+
+        local state_data="${running_activities[$activity_name]}"
+        local start_time="${state_data%%:*}"
+        local active_duration="${state_data##*:}"
+
+        local total_elapsed_time=$((current_time - start_time))
+
+        if (( total_elapsed_time > 0 )); then
+            local active_percentage=$(( (active_duration * 100) / total_elapsed_time ))
+
+            if (( active_percentage < ACTIVITY_PERCENTAGE_THRESHOLD )); then
+                echo "Stopping activity '$activity_name' due to low activity percentage ($active_percentage%)."
+                
+                local json_payload
+                json_payload=$(build_json_payload "stop" "" "")
+                # Manually set the activity name in the payload
+                json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"\"/\"extra_activity_name\": \"$activity_name\"/")
+
+                echo "$json_payload" >&2
+                send_notification "$json_payload"
+                unset "running_activities[$activity_name]"
+            fi
+        fi
+    done
+}
+
+on_cleanup() {
+    echo "Cleaning up and stopping all activities."
+    for activity_name in "${!running_activities[@]}"; do
+        echo "Stopping activity '$activity_name' on cleanup."
+        
+        local json_payload
+        json_payload=$(build_json_payload "stop" "" "")
+        # Manually set the activity name in the payload
+        json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"\"/\"extra_activity_name\": \"$activity_name\"/")
+
+        echo "$json_payload" >&2
+        send_notification "$json_payload"
+        unset "running_activities[$activity_name]"
+    done
 }
