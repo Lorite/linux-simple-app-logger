@@ -104,6 +104,51 @@ get_active_window_info() {
     _app_name_ref=$(get_process_name "$_window_id_ref")
 }
 
+fetch_media_title() {
+    if command -v playerctl &> /dev/null; then
+        local video_title
+        local channel_name
+        video_title=$(playerctl metadata title 2>/dev/null)
+        channel_name=$(playerctl metadata xesam:artist 2>/dev/null)
+        if [[ -n "$video_title" && -n "$channel_name" ]]; then
+            echo "$channel_name — $video_title"
+        elif [[ -n "$video_title" ]]; then
+            echo "$video_title"
+        else
+            echo ""
+        fi
+    else
+        echo ""
+    fi
+}
+
+handle_media_activity() {
+    if [[ "$(playerctl status 2>/dev/null)" == "Playing" ]]; then
+        local current_media_comment
+        current_media_comment=$(fetch_media_title)
+
+        if [[ "$current_media_comment" != "$previous_media_comment" ]]; then
+            if [[ -n "$previous_media_comment" ]]; then
+                if declare -f on_finished_activity > /dev/null; then
+                    on_finished_activity "Media" "$previous_media_comment" 0
+                fi
+            fi
+
+            if declare -f on_new_activity > /dev/null; then
+                on_new_activity "Media" "$current_media_comment"
+            fi
+            previous_media_comment="$current_media_comment"
+        fi
+    else
+        if [[ -n "$previous_media_comment" ]]; then
+            if declare -f on_finished_activity > /dev/null; then
+                on_finished_activity "Media" "$previous_media_comment" 0
+            fi
+        fi
+        previous_media_comment=""
+    fi
+}
+
 is_blacklisted() {
     local app_name="$1"
     local window_title="$2"
@@ -264,6 +309,8 @@ main() {
             on_loop_interval # user-defined external function call
         fi
 
+        handle_media_activity
+
         sleep "$SLEEP_INTERVAL"
     done
 }
@@ -291,6 +338,7 @@ previous_window_id=""
 previous_window_title=""
 previous_app_name=""
 start_time=0
+previous_media_comment=""
 
 check_dependencies
 
