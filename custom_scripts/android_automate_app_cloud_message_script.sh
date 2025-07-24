@@ -36,20 +36,15 @@ fetch_youtube_video_title() {
 # If so, it sends a notification with the new video title.
 #
 send_youtube_activity_if_needed() {
-    if [[ $(playerctl status 2>/dev/null) == "Playing" ]]; then
+    if [[ "$(playerctl status 2>/dev/null)" == "Playing" ]]; then
         local current_youtube_comment
         current_youtube_comment=$(fetch_youtube_video_title)
 
         if [[ "$current_youtube_comment" != "$previous_youtube_comment" ]]; then
+            local payload_json
+            payload_json=$(printf '{"action": "start", "extra_activity_name": "YouTube", "extra_record_comment": "%s"}' "$current_youtube_comment")
             local json_payload
-            json_payload_payload=$(printf '{"action": "start", "extra_activity_name": "YouTube", "extra_record_comment": "%s"}' "$current_youtube_comment")
-            json_payload=$(printf '{
-                "secret": "%s",
-                "to": "%s",
-                "device": "%s",
-                "priority": "normal",
-                "payload": %s
-            }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$json_payload_payload")
+            json_payload=$(build_notification_json "$payload_json")
             echo "$json_payload" >&2
 
             send_notification "$json_payload"
@@ -57,15 +52,10 @@ send_youtube_activity_if_needed() {
         fi
     else
         if [[ -n "$previous_youtube_comment" ]]; then
+            local payload_json
+            payload_json=$(printf '{"action": "stop", "extra_activity_name": "YouTube", "extra_record_comment": "%s"}' "$previous_youtube_comment")
             local json_payload
-            json_payload=$(printf '{"action": "stop", "extra_activity_name": "YouTube", "extra_record_comment": "%s"}' "$previous_youtube_comment")
-            json_payload=$(printf '{
-                "secret": "%s",
-                "to": "%s",
-                "device": "%s",
-                "priority": "normal",
-                "payload": %s
-            }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$json_payload")
+            json_payload=$(build_notification_json "$payload_json")
             echo "$json_payload" >&2
 
             send_notification "$json_payload"
@@ -143,6 +133,17 @@ get_activity_info() {
     printf "%s\n%s" "$activity" "$comment"
 }
 
+build_notification_json() {
+    local payload_json="$1"
+    printf '{
+      "secret": "%s",
+      "to": "%s",
+      "device": "%s",
+      "priority": "normal",
+      "payload": %s
+    }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$payload_json"
+}
+
 # build_json_payload
 #
 # This function builds the JSON payload for the notification.
@@ -168,13 +169,7 @@ build_json_payload() {
     local payload_json
     payload_json=$(printf '{"action": "%s", "extra_activity_name": "%s", "extra_record_comment": "%s"}' "$action" "$extra_activity_name" "$extra_record_comment")
 
-    printf '{
-      "secret": "%s",
-      "to": "%s",
-      "device": "%s",
-      "priority": "normal",
-      "payload": %s
-    }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$payload_json"
+    build_notification_json "$payload_json"
 }
 
 # send_notification

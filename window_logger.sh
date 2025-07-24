@@ -48,10 +48,17 @@ check_output_folder() {
 }
 
 check_file_exists_and_create() {
-    if [[ ! -f "$OUTPUT_FILE" ]]; then
-        mkdir -p "$(dirname "$OUTPUT_FILE")"
-        echo "\"App name\",\"Window Title\",\"Date\",\"Time\",\"Duration\"" >"$OUTPUT_FILE"
+    local file_path="$1"
+    if [[ ! -f "$file_path" ]]; then
+        mkdir -p "$(dirname "$file_path")"
+        echo "\"App name\",\"Window Title\",\"Date\",\"Time\",\"Duration\"" >"$file_path"
     fi
+}
+
+get_output_file_for_today() {
+    local today
+    today=$(date +"%Y-%m-%d")
+    echo "$OUTPUT_FOLDER/$today/LORI_Activity_$today.csv"
 }
 
 get_active_window_id() {
@@ -61,17 +68,40 @@ get_active_window_id() {
 get_window_title() {
     local window_id="$1"
     if [[ -z "$window_id" ]]; then
-        return 1
+        echo ""
+        return
     fi
-    xprop -id "$window_id" WM_NAME 2>/dev/null | cut -d '=' -f 2 | sed 's/"//g'
+    xprop -id "$window_id" WM_NAME 2>/dev/null | cut -d '=' -f 2 | sed 's/"//g' | tr -d '\n\r'
 }
 
 get_process_name() {
     local window_id="$1"
     if [[ -z "$window_id" ]]; then
-        return 1
+        echo ""
+        return
     fi
-    xprop -id "$window_id" _NET_WM_PID 2>/dev/null | cut -d '=' -f 2 | xargs -I {} ps -p {} -o comm= | tr -d '\n' | tr -d '\r' | sed 's/,/ /g'
+    local pid
+    pid=$(xprop -id "$window_id" _NET_WM_PID 2>/dev/null | cut -d '=' -f 2 | tr -d ' ')
+    if [[ -n "$pid" && "$pid" -gt 0 ]]; then
+        ps -p "$pid" -o comm= | tr -d '\n\r'
+    else
+        echo ""
+    fi
+}
+
+get_active_window_info() {
+    local -n _window_id_ref=$1
+    local -n _window_title_ref=$2
+    local -n _app_name_ref=$3
+
+    _window_id_ref=$(get_active_window_id)
+    if [[ -z "$_window_id_ref" ]]; then
+        _window_title_ref=""
+        _app_name_ref=""
+        return
+    fi
+    _window_title_ref=$(get_window_title "$_window_id_ref")
+    _app_name_ref=$(get_process_name "$_window_id_ref")
 }
 
 is_blacklisted() {
@@ -95,7 +125,11 @@ log_previous_activity() {
         end_time=$(date +%s)
         local duration=$((end_time - start_time))
 
-        if [[ $duration -gt $MIN_LOG_DURATION ]]; then
+        if declare -f on_finished_activity > /dev/null; then
+            on_finished_activity "$previous_app_name" "$previous_window_title" "$duration" # user-defined external function call
+        fi
+        
+        if [[ $duration -ge $MIN_LOG_DURATION ]]; then
             if ! is_blacklisted "$previous_app_name" "$previous_window_title"; then
                 log_message "$previous_app_name" "$previous_window_title" "$duration"
             fi
@@ -119,27 +153,26 @@ log_message() {
     local date
     local time
     local duration_formatted
+    local output_file
 
     date=$(date +"%Y-%m-%d")
     time=$(date +"%H:%M:%S")
+    output_file=$(get_output_file_for_today)
+    check_file_exists_and_create "$output_file"
 
     duration_formatted=$(format_duration "$duration_seconds")
 
-    # Check if the output file exists, if not, create it with a header row
-    if [[ ! -f "$OUTPUT_FILE" ]]; then
-        echo "\"App name\",\"Window Title\",\"Date\",\"Time\",\"Duration\"" >"$OUTPUT_FILE"
-    fi
+    # Escape double quotes in app_name and window_title for CSV
+    app_name_csv=$(echo "$app_name" | sed 's/"/""/g')
+    window_title_csv=$(echo "$window_title" | sed 's/"/""/g')
 
-    echo "\"$app_name\",\"$window_title\",\"$date\",\"$time\",\"$duration_formatted\"" | tee -a "$OUTPUT_FILE"
+    echo "\"$app_name_csv\",\"$window_title_csv\",\"$date\",\"$time\",\"$duration_formatted\"" | tee -a "$output_file"
 }
 
 cleanup() {
     echo -e "\nStopping window logger."
     # Log the duration of the last activity before exiting
     log_previous_activity
-    if declare -f on_finished_activity > /dev/null; then
-        on_finished_activity "$previous_app_name" "$previous_window_title" "$duration" # user-defined external function call
-    fi
     exit 0
 }
 
@@ -192,44 +225,44 @@ main() {
         fi
     fi
 
-    # These are now dynamic based on arguments
-    readonly TODAY=$(date +"%Y-%m-%d")
-    readonly OUTPUT_FILE="$OUTPUT_FOLDER/$TODAY/LORI_Activity_$TODAY.csv"
-
-    # Initialize with the current active window at script start
-    previous_window_id=$(get_active_window_id)
-    previous_window_title=$(get_window_title "$previous_window_id" | tr -d '\n' | tr -d '\r' | sed 's/,/ /g')
-    previous_app_name=$(get_process_name "$previous_window_id")
-    start_time=$(date +%s)
-
     check_output_folder
 
-    check_file_exists_and_create
+    # Initialize with the current active window at script start
+    get_active_window_info previous_window_id previous_window_title previous_app_name
+    start_time=$(date +%s)
 
-    echo "Starting window logger. Logging to $OUTPUT_FILE. Press Ctrl+C to stop."
+    local output_file
+    output_file=$(get_output_file_for_today)
+    check_file_exists_and_create "$output_file"
+
+    echo "Starting window logger. Press Ctrl+C to stop."
 
     while true; do
         local current_window_id
-        current_window_id=$(get_active_window_id)
         local current_window_title
-        current_window_title=$(get_window_title "$current_window_id" | tr -d '\n' | tr -d '\r' | sed 's/,/ /g')
+        local current_app_name
+        get_active_window_info current_window_id current_window_title current_app_name
 
-        if [[ -n "$current_window_id" && ("$current_window_id" != "$previous_window_id" || "$current_window_title" != "$previous_window_title") ]]; then
+        if [[ -z "$current_window_title" ]]; then
+            sleep "$SLEEP_INTERVAL"
+            continue
+        fi
+
+        if [[ "$current_window_id" != "$previous_window_id" || "$current_window_title" != "$previous_window_title" ]]; then
             log_previous_activity
-            if declare -f on_finished_activity > /dev/null; then
-                on_finished_activity "$previous_app_name" "$previous_window_title" "$duration" # user-defined external function call
-            fi
 
             previous_window_id="$current_window_id"
-            previous_app_name=$(get_process_name "$current_window_id")
-            previous_window_title=$current_window_title
+            previous_app_name="$current_app_name"
+            previous_window_title="$current_window_title"
             start_time=$(date +%s)
             if declare -f on_new_activity > /dev/null; then
                 on_new_activity "$previous_app_name" "$previous_window_title" # user-defined external function call
             fi
         fi
 
-        on_loop_interval # user-defined external function call
+        if declare -f on_loop_interval > /dev/null; then
+            on_loop_interval # user-defined external function call
+        fi
 
         sleep "$SLEEP_INTERVAL"
     done
