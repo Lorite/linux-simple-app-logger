@@ -12,6 +12,7 @@ A simple Bash script to monitor and log active window information on a Linux des
 - Blacklists specific processes and/or window titles to avoid logging them using a regex pattern.
 - Gracefully handles script termination (`Ctrl+C`) to log the final activity.
 - Tab completion for command-line arguments.
+- **Extensible with custom scripts:** Allows for custom actions on activity changes through user-defined functions.
 
 ## Dependencies
 
@@ -50,6 +51,12 @@ To start logging your window activity, simply run the script from your terminal:
 
 ```bash
 ./window_logger.sh
+```
+
+By default, it will look for a `custom_scripts/my_custom_script.sh` file. You can specify a different custom script using the `-c` or `--custom-script` flag:
+
+```bash
+./window_logger.sh -c custom_scripts/android_automate_app_cloud_message_script.sh
 ```
 
 The script will print a message indicating that it has started and where it is logging the data.
@@ -141,7 +148,7 @@ This command will:
 
 You can extend the logger's functionality by providing a custom script file using the `-c` or `--custom-script` argument. This script will be sourced at startup.
 
-If the custom script defines functions like `on_new_activity`, `on_finished_activity`, or `on_loop_interval`, these functions will be called at the appropriate times.
+If the custom script defines functions like `on_new_activity`, `on_finished_activity`, `on_loop_interval`, or `on_cleanup`, these functions will be called at the appropriate times.
 
 - `on_new_activity` is called when a new window becomes active. It receives two arguments:
     - `app_name`: The name of the new application.
@@ -151,6 +158,7 @@ If the custom script defines functions like `on_new_activity`, `on_finished_acti
     - `window_title`: The title of the window.
     - `duration`: The duration of the activity in seconds.
 - `on_loop_interval` is called on each loop interval of the main script.
+- `on_cleanup` is called when the script is about to exit.
 
 #### Example Custom Script
 

@@ -16,7 +16,7 @@
 on_new_activity() {
     local app_name="$1"
     local window_title="$2"
-    echo "New activity: $app_name - $window_title"
+    echo "Custom script: New activity detected: $app_name - $window_title"
 }
 
 # on_finished_activity
@@ -31,5 +31,29 @@ on_finished_activity() {
     local app_name="$1"
     local window_title="$2"
     local duration="$3"
-    echo "Finished activity: $app_name - $window_title (duration: $duration seconds)"
+    echo "Custom script: Finished activity: $app_name - $window_title (duration: $duration seconds)"
+}
+
+# on_loop_interval
+#
+# This function is called on each loop interval of the main script.
+#
+# @param 1: The name of the current application.
+# @param 2: The title of the current window.
+#
+on_loop_interval() {
+    local current_app_name="$1"
+    local current_window_title="$2"
+    # This function is called on each loop interval.
+    # You can add any custom logic here that you want to be executed periodically.
+    # For example, you could check for idle time, send a notification, etc.
+    echo "Custom script: Loop interval tick. Current window: $current_app_name - $current_window_title"
+}
+
+# on_cleanup
+#
+# This function is called when the script is about to exit.
+#
+on_cleanup() {
+    echo "Custom script: Cleaning up before exit."
 }
