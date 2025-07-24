@@ -98,9 +98,6 @@ log_previous_activity() {
         if [[ $duration -gt $MIN_LOG_DURATION ]]; then
             if ! is_blacklisted "$previous_app_name" "$previous_window_title"; then
                 log_message "$previous_app_name" "$previous_window_title" "$duration"
-                if declare -f on_finished_activity > /dev/null; then
-                    on_finished_activity "$previous_app_name" "$previous_window_title" "$duration"
-                fi
             fi
         fi
     fi
@@ -140,6 +137,9 @@ cleanup() {
     echo -e "\nStopping window logger."
     # Log the duration of the last activity before exiting
     log_previous_activity
+    if declare -f on_finished_activity > /dev/null; then
+        on_finished_activity "$previous_app_name" "$previous_window_title" "$duration" # user-defined external function call
+    fi
     exit 0
 }
 
@@ -216,15 +216,20 @@ main() {
 
         if [[ -n "$current_window_id" && ("$current_window_id" != "$previous_window_id" || "$current_window_title" != "$previous_window_title") ]]; then
             log_previous_activity
+            if declare -f on_finished_activity > /dev/null; then
+                on_finished_activity "$previous_app_name" "$previous_window_title" "$duration" # user-defined external function call
+            fi
 
             previous_window_id="$current_window_id"
             previous_app_name=$(get_process_name "$current_window_id")
             previous_window_title=$current_window_title
             start_time=$(date +%s)
             if declare -f on_new_activity > /dev/null; then
-                on_new_activity "$previous_app_name" "$previous_window_title"
+                on_new_activity "$previous_app_name" "$previous_window_title" # user-defined external function call
             fi
         fi
+
+        on_loop_interval # user-defined external function call
 
         sleep "$SLEEP_INTERVAL"
     done

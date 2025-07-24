@@ -6,6 +6,74 @@
 
 # --- Helper Functions ---
 
+# fetch_youtube_video_title
+#
+# This function fetches the title of the currently playing YouTube video.
+# It uses playerctl to get the metadata from the player.
+#
+fetch_youtube_video_title() {
+    if command -v playerctl &> /dev/null; then
+        local video_title
+        local channel_name
+        video_title=$(playerctl metadata title 2>/dev/null)
+        channel_name=$(playerctl metadata xesam:artist 2>/dev/null)
+        if [[ -n "$video_title" && -n "$channel_name" ]]; then
+            echo "$channel_name — $video_title"
+        elif [[ -n "$video_title" ]]; then
+            echo "$video_title"
+        else
+            echo ""
+        fi
+    else
+        echo ""
+    fi
+}
+
+# send_youtube_activity_if_needed
+#
+# This function sends an activity update if a new YouTube video is playing.
+# It checks if a YouTube video is playing and if the title has changed since the last check.
+# If so, it sends a notification with the new video title.
+#
+send_youtube_activity_if_needed() {
+    if [[ $(playerctl status 2>/dev/null) == "Playing" ]]; then
+        local current_youtube_comment
+        current_youtube_comment=$(fetch_youtube_video_title)
+
+        if [[ "$current_youtube_comment" != "$previous_youtube_comment" ]]; then
+            local json_payload
+            json_payload_payload=$(printf '{"action": "start", "extra_activity_name": "YouTube", "extra_record_comment": "%s"}' "$current_youtube_comment")
+            json_payload=$(printf '{
+                "secret": "%s",
+                "to": "%s",
+                "device": "%s",
+                "priority": "normal",
+                "payload": %s
+            }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$json_payload_payload")
+            echo "$json_payload" >&2
+
+            send_notification "$json_payload"
+            previous_youtube_comment="$current_youtube_comment"
+        fi
+    else
+        if [[ -n "$previous_youtube_comment" ]]; then
+            local json_payload
+            json_payload=$(printf '{"action": "stop", "extra_activity_name": "YouTube", "extra_record_comment": "%s"}' "$previous_youtube_comment")
+            json_payload=$(printf '{
+                "secret": "%s",
+                "to": "%s",
+                "device": "%s",
+                "priority": "normal",
+                "payload": %s
+            }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$json_payload")
+            echo "$json_payload" >&2
+
+            send_notification "$json_payload"
+        fi
+        previous_youtube_comment=""
+    fi
+}
+
 # get_activity_info
 #
 # This function determines the extra activity name and record comment based on the app name and window title.
@@ -22,15 +90,15 @@ get_activity_info() {
 
     case "$app_name" in
         "firefox"|"chrome"|"brave")
-            if [[ "$window_title" == *"YouTube"* ]]; then
-                activity="YouTube"
-            elif [[ "$window_title" == *"Outlook"* || "$window_title" == *"Gmail"* ]]; then
+            if [[ "$window_title" == *"Youtube - Brave"* ]]; then
+                activity=""
+            elif [[ "$window_title" == *"Outlook - Brave"* || "$window_title" == *"Gmail - Brave"* ]]; then
                 activity="Email"
             elif [[ "$window_title" == *"Google Docs"* ]]; then
                 activity="Write"
             elif [[ "$window_title" == *"Google Meet"* ]] || [[ "$window_title" == *"Zoom"* ]] || [[ "$window_title" == *"Teams"* ]]; then
                 activity="Meeting"
-            elif [[ "$window_title" == *"Google Keep"* ]]; then
+            elif [[ "$window_title" == *"Google Keep - Brave"* ]]; then
                 activity="Take notes"
             else
                 activity="Read"
@@ -72,7 +140,6 @@ get_activity_info() {
             ;;
     esac
 
-    # echo "Found activity: $activity and comment: $comment for app: $app_name and window: $window_title" >&2
     printf "%s\n%s" "$activity" "$comment"
 }
 
@@ -162,6 +229,15 @@ on_finished_activity() {
 
     local json_payload
     json_payload=$(build_json_payload "stop" "$app_name" "$window_title")
-
+    echo "$json_payload" >&2
+    
     send_notification "$json_payload"
+}
+
+# on_loop_interval
+#
+# This function is called on each loop interval of the main script.
+#
+on_loop_interval() {
+    send_youtube_activity_if_needed
 }

@@ -141,7 +141,7 @@ This command will:
 
 You can extend the logger's functionality by providing a custom script file using the `-c` or `--custom-script` argument. This script will be sourced at startup.
 
-If the custom script defines functions like `on_new_activity` or `on_finished_activity`, these functions will be called at the appropriate times.
+If the custom script defines functions like `on_new_activity`, `on_finished_activity`, or `on_loop_interval`, these functions will be called at the appropriate times.
 
 - `on_new_activity` is called when a new window becomes active. It receives two arguments:
     - `app_name`: The name of the new application.
@@ -150,6 +150,7 @@ If the custom script defines functions like `on_new_activity` or `on_finished_ac
     - `app_name`: The name of the application (e.g., "Brave").
     - `window_title`: The title of the window.
     - `duration`: The duration of the activity in seconds.
+- `on_loop_interval` is called on each loop interval of the main script.
 
 #### Example Custom Script
 
@@ -160,6 +161,32 @@ You would run the main script like this:
 ```bash
 ./window_logger.sh -c /path/to/custom_scripts/custom_script.sh
 ```
+
+### Advanced Custom Script Example: Android Automate Integration
+
+The `custom_scripts/android_automate_app_cloud_message_script.sh` provides a more advanced example of what can be done with custom scripts. It integrates with the [Automate](https://llamalab.com/automate/) Android application to send real-time activity updates to your phone.
+
+#### Features
+
+-   **Real-time Notifications**: Sends `start` and `stop` messages to Automate when you switch activities on your desktop.
+-   **Activity Mapping**: Translates application names and window titles into meaningful activities (e.g., "Code", "Read", "Email", "Meeting").
+-   **YouTube Tracking**: Detects when you are watching a YouTube video (in a browser) and sends specific updates for it.
+
+#### Dependencies
+
+-   `playerctl`: Required for the YouTube tracking feature. You can install it on Debian/Ubuntu with `sudo apt-get install playerctl`.
+
+#### Setup
+
+1.  **Configure Automate**: You need an Automate flow that can receive cloud messages. The script sends a JSON payload that your flow can parse.
+2.  **Set Environment Variables**: The script requires the following environment variables to be set. You can add them to your `~/.bashrc` or `~/.zshrc` file.
+    -   `AUTOMATE_ANDROID_APP_SECRET`: Your Automate cloud message secret.
+    -   `AUTOMATE_ANDROID_APP_TO`: The recipient of the message (usually your email).
+    -   `AUTOMATE_ANDROID_APP_DEVICE`: The target device name in Automate.
+3.  **Run the logger**:
+    ```bash
+    ./window_logger.sh -c custom_scripts/android_automate_app_cloud_message_script.sh
+    ```
 
 ## Output Format
 
