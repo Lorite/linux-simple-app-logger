@@ -83,6 +83,31 @@ get_activity_info() {
     printf "%s\n%s" "$activity" "$comment"
 }
 
+build_add_record_json_payload() {
+    local app_name="$1"
+    local window_title="$2"
+    local start_time="$3"
+    local end_time="$4"
+
+    local activity_info
+    activity_info=$(get_activity_info "$app_name" "$window_title")
+    local extra_activity_name
+    extra_activity_name=$(echo "$activity_info" | sed -n '1p')
+    local extra_record_comment
+    extra_record_comment=$(echo "$activity_info" | sed -n '2p')
+
+    local start_time_iso
+    start_time_iso=$(date -d "@$start_time" --iso-8601=seconds)
+    local end_time_iso
+    end_time_iso=$(date -d "@$end_time" --iso-8601=seconds)
+
+    local payload_json
+    payload_json=$(printf '{"action": "add_record", "extra_activity_name": "%s", "extra_record_comment": "%s", "extra_record_time_started": "%s", "extra_record_time_ended": "%s"}' \
+        "$extra_activity_name" "$extra_record_comment" "$start_time_iso" "$end_time_iso")
+
+    build_notification_json "$payload_json"
+}
+
 build_notification_json() {
     local payload_json="$1"
     printf '{
@@ -94,34 +119,6 @@ build_notification_json() {
     }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$payload_json"
 }
 
-# build_json_payload
-#
-# This function builds the JSON payload for the notification.
-#
-# @param 1: The action (e.g., "start", "finish").
-# @param 2: The name of the application.
-# @param 3: The title of the window.
-# @param 4: The duration of the activity in seconds (optional).
-#
-build_json_payload() {
-    local action="$1"
-    local app_name="$2"
-    local window_title="$3"
-    # echo "Building JSON payload for action: $action, app: $app_name, window: $window_title" >&2
-
-    local activity_info
-    activity_info=$(get_activity_info "$app_name" "$window_title")
-    local extra_activity_name
-    extra_activity_name=$(echo "$activity_info" | sed -n '1p')
-    local extra_record_comment
-    extra_record_comment=$(echo "$activity_info" | sed -n '2p')
-
-    local payload_json
-    payload_json=$(printf '{"action": "%s", "extra_activity_name": "%s", "extra_record_comment": "%s"}' "$action" "$extra_activity_name" "$extra_record_comment")
-
-    build_notification_json "$payload_json"
-}
-
 # send_notification
 #
 # This function sends a notification with the given JSON payload.
@@ -130,12 +127,12 @@ build_json_payload() {
 #
 send_notification() {
     local json_payload="$1"
+    echo "$json_payload" >&2
 
-    # curl -X POST -H "Content-Type: application/json" \
-    # -d "$json_payload" \
-    # https://llamalab.com/automate/cloud/message
+    curl -X POST -H "Content-Type: application/json" \
+    -d "$json_payload" \
+    https://llamalab.com/automate/cloud/message
 }
-
 
 # --- Custom Functions ---
 
@@ -166,11 +163,6 @@ on_new_activity() {
         local start_time
         start_time=$(date +%s)
         running_activities["$extra_activity_name"]="$start_time:0"
-        
-        local json_payload
-        json_payload="$(build_json_payload "start" "$app_name" "$window_title")"
-        echo "$json_payload" >&2
-        send_notification "$json_payload"
     fi
 }
 
@@ -207,6 +199,22 @@ on_finished_activity() {
     fi
 }
 
+stop_activity() {
+    local activity_name="$1"
+    local end_time="$2"
+
+    local state_data="${running_activities[$activity_name]}"
+    local start_time="${state_data%%:*}"
+    
+    local json_payload
+    json_payload=$(build_add_record_json_payload "" "" "$start_time" "$end_time")
+    # Manually set the activity name in the payload
+    json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"\"/\"extra_activity_name\": \"$activity_name\"/")
+
+    send_notification "$json_payload"
+    unset "running_activities[$activity_name]"
+}
+
 # on_loop_interval
 #
 # This function is called on each loop interval of the main script.
@@ -239,15 +247,7 @@ on_loop_interval() {
 
             if (( active_percentage < ACTIVITY_PERCENTAGE_THRESHOLD )); then
                 echo "Stopping activity '$activity_name' due to low activity percentage ($active_percentage%)."
-                
-                local json_payload
-                json_payload=$(build_json_payload "stop" "" "")
-                # Manually set the activity name in the payload
-                json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"\"/\"extra_activity_name\": \"$activity_name\"/")
-
-                echo "$json_payload" >&2
-                send_notification "$json_payload"
-                unset "running_activities[$activity_name]"
+                stop_activity "$activity_name" "$current_time"
             fi
         fi
     done
@@ -255,16 +255,10 @@ on_loop_interval() {
 
 on_cleanup() {
     echo "Cleaning up and stopping all activities."
+    local end_time
+    end_time=$(date +%s)
     for activity_name in "${!running_activities[@]}"; do
         echo "Stopping activity '$activity_name' on cleanup."
-        
-        local json_payload
-        json_payload=$(build_json_payload "stop" "" "")
-        # Manually set the activity name in the payload
-        json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"\"/\"extra_activity_name\": \"$activity_name\"/")
-
-        echo "$json_payload" >&2
-        send_notification "$json_payload"
-        unset "running_activities[$activity_name]"
+        stop_activity "$activity_name" "$end_time"
     done
 }
