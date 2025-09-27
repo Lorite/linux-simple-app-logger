@@ -96,10 +96,11 @@ build_add_record_json_payload() {
     local extra_record_comment
     extra_record_comment=$(echo "$activity_info" | sed -n '2p')
 
+    # Format times as 'YYYY-MM-DD HH:MM:SS' (remove 'T' and timezone offset)
     local start_time_iso
-    start_time_iso=$(date -d "@$start_time" --iso-8601=seconds)
+    start_time_iso=$(date -d "@$start_time" +"%Y-%m-%d %H:%M:%S")
     local end_time_iso
-    end_time_iso=$(date -d "@$end_time" --iso-8601=seconds)
+    end_time_iso=$(date -d "@$end_time" +"%Y-%m-%d %H:%M:%S")
 
     local payload_json
     payload_json=$(printf '{"action": "add_record", "extra_activity_name": "%s", "extra_record_comment": "%s", "extra_record_time_started": "%s", "extra_record_time_ended": "%s"}' \
@@ -127,7 +128,7 @@ build_notification_json() {
 #
 send_notification() {
     local json_payload="$1"
-    echo "$json_payload" >&2
+    # echo "$json_payload" >&2
 
     curl -X POST -H "Content-Type: application/json" \
     -d "$json_payload" \
@@ -206,6 +207,15 @@ stop_activity() {
     local state_data="${running_activities[$activity_name]}"
     local start_time="${state_data%%:*}"
     
+    # only build the json if more than 2 minutes and 30 seconds of activity
+    local active_duration="${state_data##*:}"
+    if (( active_duration < 150 )); then
+        echo "Activity '$activity_name' active duration ($active_duration seconds) is less than threshold. Not logging."
+        unset "running_activities[$activity_name]"
+        return
+    fi
+
+    # Build the JSON payload and send the notification
     local json_payload
     json_payload=$(build_add_record_json_payload "" "" "$start_time" "$end_time")
     # Manually set the activity name in the payload
