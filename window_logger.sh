@@ -406,6 +406,9 @@ main() {
 
     check_output_folder
 
+    # Start listening for screen lock events in the background
+    handle_lock_events &
+
     # Initialize with the current active window at script start
     get_active_window_info previous_window_id previous_window_title previous_app_name
     start_time=$(date +%s)
@@ -466,6 +469,24 @@ _logger_completions() {
 complete -F _logger_completions window_logger.sh
 
 trap cleanup SIGINT SIGTERM
+
+# --- Functions for handling screen lock ---
+handle_lock_events() {
+    dbus-monitor --session "type='signal',interface='org.gnome.ScreenSaver',member='ActiveChanged'" |
+    while read -r line; do
+        if echo "$line" | grep -q "boolean true"; then
+            echo "Screen locked, running on_lock handler..."
+            on_lock
+        fi
+    done
+}
+
+on_lock() {
+    if declare -f on_cleanup > /dev/null; then
+        on_cleanup
+    fi
+}
+
 
 # Global variables for cleanup handler
 previous_window_id=""
