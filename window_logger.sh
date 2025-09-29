@@ -123,29 +123,51 @@ fetch_media_title() {
 }
 
 handle_media_activity() {
-    if [[ "$(playerctl status 2>/dev/null)" == "Playing" ]]; then
+    local player_status
+    player_status=$(playerctl status 2>/dev/null)
+    
+    if [[ "$player_status" == "Playing" ]]; then
         local current_media_comment
         current_media_comment=$(fetch_media_title)
 
         if [[ "$current_media_comment" != "$previous_media_comment" ]]; then
-            if [[ -n "$previous_media_comment" ]]; then
+            # Finish previous media activity if there was one
+            if [[ -n "$previous_media_comment" && "$media_start_time" -ne 0 ]]; then
+                local end_time duration
+                end_time=$(date +%s)
+                duration=$((end_time - media_start_time))
                 if declare -f on_finished_activity > /dev/null; then
-                    on_finished_activity "Media" "$previous_media_comment" 0
+                    on_finished_activity "Media" "$previous_media_comment" "$duration"
                 fi
             fi
 
+            # Start new media activity
+            if [[ -n "$current_media_comment" ]]; then
+                if declare -f on_new_activity > /dev/null; then
+                    on_new_activity "Media" "$current_media_comment"
+                fi
+                previous_media_comment="$current_media_comment"
+                media_start_time=$(date +%s)
+            fi
+        elif [[ -z "$previous_media_comment" && -n "$current_media_comment" ]]; then
+            # Resuming playback of the same media
             if declare -f on_new_activity > /dev/null; then
                 on_new_activity "Media" "$current_media_comment"
             fi
             previous_media_comment="$current_media_comment"
+            media_start_time=$(date +%s)
         fi
-    else
-        if [[ -n "$previous_media_comment" ]]; then
+    else # Paused or Stopped
+        if [[ -n "$previous_media_comment" && "$media_start_time" -ne 0 ]]; then
+            local end_time duration
+            end_time=$(date +%s)
+            duration=$((end_time - media_start_time))
             if declare -f on_finished_activity > /dev/null; then
-                on_finished_activity "Media" "$previous_media_comment" 0
+                on_finished_activity "Media" "$previous_media_comment" "$duration"
             fi
+            previous_media_comment=""
+            media_start_time=0
         fi
-        previous_media_comment=""
     fi
 }
 
@@ -494,6 +516,7 @@ previous_window_title=""
 previous_app_name=""
 start_time=0
 previous_media_comment=""
+media_start_time=0
 
 check_dependencies
 

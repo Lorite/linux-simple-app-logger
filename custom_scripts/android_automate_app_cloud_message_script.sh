@@ -5,7 +5,7 @@
 # at different points in the main script's execution.
 
 # --- Configuration ---
-ACTIVITY_PERCENTAGE_THRESHOLD=50 # Stop activity if active for less than this percentage
+ACTIVITY_PERCENTAGE_THRESHOLD=90 # Stop activity if active for less than this percentage
 declare -A running_activities
 
 # --- Helper Functions ---
@@ -25,14 +25,14 @@ get_activity_info() {
     local comment=""
 
     case "$app_name" in
-        "Media")
+        "YouTube"|"Media")
             activity="YouTube"
             comment="$window_title"
             ;;
         "firefox"|"chrome"|"brave")
-            if [[ "$window_title" == *"YouTube - "* ]]; then
-                activity=""
-            elif [[ "$window_title" == *"Outlook - "* || "$window_title" == *"Gmail - "* ]]; then
+            # if [[ "$window_title" == *"YouTube - "* ]]; then
+            #     activity="YouTube"
+            if [[ "$window_title" == *"Outlook - "* || "$window_title" == *"Gmail - "* ]]; then
                 activity="Email"
             elif [[ "$window_title" == *"Google Docs"* ]]; then
                 activity="Write"
@@ -83,11 +83,26 @@ get_activity_info() {
     printf "%s\n%s" "$activity" "$comment"
 }
 
-build_add_record_json_payload() {
+build_start_json_payload() {
     local app_name="$1"
     local window_title="$2"
-    local start_time="$3"
-    local end_time="$4"
+    local activity_info
+    activity_info=$(get_activity_info "$app_name" "$window_title")
+    local extra_activity_name
+    extra_activity_name=$(echo "$activity_info" | sed -n '1p')
+    local extra_record_comment
+    extra_record_comment=$(echo "$activity_info" | sed -n '2p')
+
+    local payload_json
+    payload_json=$(printf '{"action": "start", "extra_activity_name": "%s", "extra_record_comment": "%s"}' \
+        "$extra_activity_name" "$extra_record_comment")
+
+    build_notification_json "$payload_json"
+}
+
+build_stop_json_payload() {
+    local app_name="$1"
+    local window_title="$2"
 
     local activity_info
     activity_info=$(get_activity_info "$app_name" "$window_title")
@@ -95,6 +110,31 @@ build_add_record_json_payload() {
     extra_activity_name=$(echo "$activity_info" | sed -n '1p')
     local extra_record_comment
     extra_record_comment=$(echo "$activity_info" | sed -n '2p')
+
+    local payload_json
+    payload_json=$(printf '{"action": "stop", "extra_activity_name": "%s", "extra_record_comment": "%s"}' \
+        "$extra_activity_name" "$extra_record_comment")
+
+    build_notification_json "$payload_json"
+}
+
+build_add_record_json_payload() {
+    local activity_name="$1"
+    local window_title="$2"
+    local start_time="$3"
+    local end_time="$4"
+
+    local activity_info
+    activity_info=$(get_activity_info "$activity_name" "$window_title")
+    local extra_activity_name
+    extra_activity_name=$(echo "$activity_info" | sed -n '1p')
+    local extra_record_comment
+    extra_record_comment=$(echo "$activity_info" | sed -n '2p')
+
+    # If the comment is empty, use the window title
+    if [[ -z "$extra_record_comment" ]]; then
+        extra_record_comment="$window_title"
+    fi
 
     # Format times as 'YYYY-MM-DD HH:MM:SS' (remove 'T' and timezone offset)
     local start_time_iso
@@ -104,7 +144,7 @@ build_add_record_json_payload() {
 
     local payload_json
     payload_json=$(printf '{"action": "add_record", "extra_activity_name": "%s", "extra_record_comment": "%s", "extra_record_time_started": "%s", "extra_record_time_ended": "%s"}' \
-        "$extra_activity_name" "$extra_record_comment" "$start_time_iso" "$end_time_iso")
+        "$activity_name" "$extra_record_comment" "$start_time_iso" "$end_time_iso")
 
     build_notification_json "$payload_json"
 }
@@ -159,11 +199,11 @@ on_new_activity() {
     fi
 
     if [[ -z "${running_activities[$extra_activity_name]}" ]]; then
-        echo "Starting new activity group: $extra_activity_name"
-        # Store start time and initialize active duration
+        echo "Starting new activity group: $extra_activity_name with title '$window_title'"
+        # Store start time, initialize active duration, and store the window title
         local start_time
         start_time=$(date +%s)
-        running_activities["$extra_activity_name"]="$start_time:0"
+        running_activities["$extra_activity_name"]="$start_time:0:$window_title"
     fi
 }
 
@@ -193,10 +233,12 @@ on_finished_activity() {
     if [[ -n "${running_activities[$extra_activity_name]}" ]]; then
         local state_data="${running_activities[$extra_activity_name]}"
         local start_time="${state_data%%:*}"
-        local active_duration="${state_data##*:}"
+        local active_duration_and_title="${state_data#*:}"
+        local active_duration="${active_duration_and_title%%:*}"
         
         local new_duration=$((active_duration + duration))
-        running_activities["$extra_activity_name"]="$start_time:$new_duration"
+        # Update duration and window title
+        running_activities["$extra_activity_name"]="$start_time:$new_duration:$window_title"
     fi
 }
 
@@ -206,23 +248,46 @@ stop_activity() {
 
     local state_data="${running_activities[$activity_name]}"
     local start_time="${state_data%%:*}"
+    local active_duration_and_title="${state_data#*:}"
+    local active_duration="${active_duration_and_title%%:*}"
+    local last_window_title="${active_duration_and_title#*:}"
     
     # only build the json if more than 2 minutes and 30 seconds of activity
-    local active_duration="${state_data##*:}"
     if (( active_duration < 150 )); then
-        echo "Activity '$activity_name' active duration ($active_duration seconds) is less than threshold. Not logging."
+        echo "Activity '$activity_name' active duration ($active_duration seconds) is less than threshold. Window title: '$last_window_title'. Not logging."
         unset "running_activities[$activity_name]"
         return
     fi
 
+    # Calculate the effective start time based on the actual accumulated duration
+    local effective_start_time=$((end_time - active_duration))
+
     # Build the JSON payload and send the notification
     local json_payload
-    json_payload=$(build_add_record_json_payload "" "" "$start_time" "$end_time")
-    # Manually set the activity name in the payload
-    json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"\"/\"extra_activity_name\": \"$activity_name\"/")
+    # Pass the activity name and last known window title to get the correct comment
+    json_payload=$(build_add_record_json_payload "$activity_name" "$last_window_title" "$effective_start_time" "$end_time")
+    # Manually set the activity name in the payload, as it might be different from what get_activity_info returns
+    json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"[^\"]*\"/\"extra_activity_name\": \"$activity_name\"/")
 
     send_notification "$json_payload"
     unset "running_activities[$activity_name]"
+}
+
+update_youtube_activity_duration() {
+    local player_status
+    player_status=$(playerctl status 2>/dev/null)
+
+    if [[ "$player_status" == "Playing" && -n "${running_activities["YouTube"]}" ]]; then
+        local state_data="${running_activities["YouTube"]}"
+        local start_time="${state_data%%:*}"
+        local active_duration_and_title="${state_data#*:}"
+        local active_duration="${active_duration_and_title%%:*}"
+        local last_window_title="${active_duration_and_title#*:}"
+
+        # Increment the duration by the sleep interval from the main script
+        local new_duration=$((active_duration + 1)) # Assuming sleep interval is 1
+        running_activities["YouTube"]="$start_time:$new_duration:$last_window_title"
+    fi
 }
 
 # on_loop_interval
@@ -235,12 +300,22 @@ on_loop_interval() {
     local current_time
     current_time=$(date +%s)
 
+    update_youtube_activity_duration
+
+    local player_status
+    player_status=$(playerctl status 2>/dev/null)
+
     local current_activity_info
     current_activity_info=$(get_activity_info "$current_app_name" "$current_window_title")
     local current_extra_activity_name
     current_extra_activity_name=$(echo "$current_activity_info" | sed -n '1p')
 
     for activity_name in "${!running_activities[@]}"; do
+        # If media is playing and the activity is YouTube, don't stop it.
+        if [[ "$player_status" == "Playing" && "$activity_name" == "YouTube" ]]; then
+            continue
+        fi
+
         # If the activity is the current one, skip the check
         if [[ "$activity_name" == "$current_extra_activity_name" ]]; then
             continue
@@ -248,7 +323,8 @@ on_loop_interval() {
 
         local state_data="${running_activities[$activity_name]}"
         local start_time="${state_data%%:*}"
-        local active_duration="${state_data##*:}"
+        local active_duration_and_title="${state_data#*:}"
+        local active_duration="${active_duration_and_title%%:*}"
 
         local total_elapsed_time=$((current_time - start_time))
 
