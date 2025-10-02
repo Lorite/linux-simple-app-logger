@@ -2,6 +2,7 @@
 
 # --- Configuration ---
 OUTPUT_FOLDER="."
+SUMMARY_DATE=$(date +"%Y-%m-%d")
 
 # --- Functions ---
 
@@ -10,6 +11,7 @@ usage() {
     echo
     echo "Options:"
     echo "  -o, --output-folder FOLDER      Set the output folder where logs are stored. Default is '.'."
+    echo "  -d, --date YYYY-MM-DD           Set the date for the summary. Default is today."
     echo "  -h, --help                      Show this help message."
     exit 0
 }
@@ -21,13 +23,12 @@ check_output_folder() {
     fi
 }
 
-calculate_todays_most_used_apps() {
-    # Produces a summary CSV in today's folder with overall and top-app stats
-    local today folder summary_file
-    today=$(date +"%Y-%m-%d")
-    folder="$OUTPUT_FOLDER/$today"
+calculate_summary() {
+    # Produces a summary CSV in the specified date's folder with overall and top-app stats
+    local folder summary_file
+    folder="$OUTPUT_FOLDER/$SUMMARY_DATE"
     mkdir -p "$folder"
-    summary_file="$folder/LORI_DailyUsage_$today.csv"
+    summary_file="$folder/LORI_DailyUsage_$SUMMARY_DATE.csv"
 
     # Totals (seconds)
     local total_today=0 total_7=0 total_30=0
@@ -80,10 +81,10 @@ calculate_todays_most_used_apps() {
         }' "$file")
     }
 
-    # Iterate over the last 30 days (0 = today)
+    # Iterate over the last 30 days (relative to SUMMARY_DATE)
     local i date_str file_path
     for i in $(seq 0 29); do
-        date_str=$(date -d "-$i day" +"%Y-%m-%d" 2>/dev/null || date +"%Y-%m-%d")
+        date_str=$(date -d "$SUMMARY_DATE -$i day" +"%Y-%m-%d" 2>/dev/null || date -d "-$i day" +"%Y-%m-%d")
         file_path="$OUTPUT_FOLDER/$date_str/LORI_Activity_$date_str.csv"
         parse_log_file "$file_path" "$i"
     done
@@ -109,7 +110,7 @@ calculate_todays_most_used_apps() {
 
     # Human-readable date M/D/YY (no leading zeros) for first summary line
     local human_today
-    human_today=$(date +"%-m/%-d/%y" 2>/dev/null || date +"%m/%d/%y")
+    human_today=$(date -d "$SUMMARY_DATE" +"%-m/%-d/%y" 2>/dev/null || date -d "$SUMMARY_DATE" +"%m/%d/%y")
     # If % -m not supported (busybox), fall back & trim leading zeros
     human_today=${human_today#0}; human_today=${human_today/\/0/\/} # minimal cleanup
 
@@ -158,6 +159,10 @@ while [[ "$#" -gt 0 ]]; do
             OUTPUT_FOLDER="$2"
             shift 2
             ;;
+        -d|--date)
+            SUMMARY_DATE="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -169,4 +174,4 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 check_output_folder
-calculate_todays_most_used_apps
+calculate_summary
