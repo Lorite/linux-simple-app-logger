@@ -5,7 +5,7 @@
 # at different points in the main script's execution.
 
 # --- Configuration ---
-ACTIVITY_PERCENTAGE_THRESHOLD=90 # Stop activity if active for less than this percentage
+ACTIVITY_PERCENTAGE_THRESHOLD=50 # Stop activity if active for less than this percentage
 declare -A running_activities
 
 # --- Helper Functions ---
