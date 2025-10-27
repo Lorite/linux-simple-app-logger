@@ -168,11 +168,116 @@ build_notification_json() {
 #
 send_notification() {
     local json_payload="$1"
-    # echo "$json_payload" >&2
+    # Queue file for offline messages (override with QUEUE_FILE env var if desired)
+    local queue_file="${QUEUE_FILE:-/tmp/android_automate_queue.jsonl}"
+    local lock_file="${queue_file}.lock"
 
-    curl -X POST -H "Content-Type: application/json" \
-    -d "$json_payload" \
-    https://llamalab.com/automate/cloud/message
+    # Always queue the message first to preserve order
+    local one_line_payload
+    one_line_payload=$(echo "$json_payload" | tr '\n' ' ')
+    echo "$one_line_payload" >> "$queue_file"
+    echo "[offline-queue] Queued notification for sending: $queue_file (size: $(wc -l < "$queue_file"))" >&2
+
+    # Check for lock file. If it exists, another sender is already running.
+    if [ -f "$lock_file" ]; then
+        echo "[background-sender] Sender process already running. Notification is queued."
+        return 0
+    fi
+
+    # No lock file, so we can start a new background sender process.
+    # The background process will handle the lock.
+    _send_and_process_queue_background "$queue_file" "$lock_file" &
+}
+
+# _send_and_process_queue_background
+#
+# This is the background worker function that sends all queued notifications.
+# It uses a lock file to ensure only one instance runs at a time.
+#
+# @param 1: The queue file path.
+# @param 2: The lock file path.
+#
+_send_and_process_queue_background() {
+    local queue_file="$1"
+    local lock_file="$2"
+
+    # Create the lock file
+    touch "$lock_file"
+
+    # Ensure the lock file is removed on exit
+    trap 'rm -f "$lock_file"; echo "[background-sender] Sender process finished.";' EXIT
+
+    echo "[background-sender] Starting to process notification queue."
+
+    # Use a temp file to store any still-failing payloads
+    local tmp_file
+    tmp_file=$(mktemp "${queue_file}.XXXX") || return 1
+
+    local line kept_any=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+
+        # Attempt to send the current notification (with lightweight retry)
+        local attempt max_attempts=3 backoff=2
+        local sent_successfully=0
+        for attempt in $(seq 1 $max_attempts); do
+            curl -s -S -X POST -H "Content-Type: application/json" \
+                -d "$line" \
+                https://llamalab.com/automate/cloud/message
+            local curl_exit_code=$?
+
+            if [[ $curl_exit_code -eq 0 ]]; then
+                # Success
+                echo "[background-sender] Notification sent successfully."
+                sent_successfully=1
+                sleep 15 # Wait for 15 seconds after a successful send
+                break # Exit retry loop
+            elif [[ $curl_exit_code -eq 6 ]]; then
+                echo "[background-sender] curl DNS resolution failed (exit 6) on attempt $attempt/$max_attempts. Will retry." >&2
+            else
+                echo "[background-sender] curl failed with exit code $curl_exit_code on attempt $attempt/$max_attempts" >&2
+            fi
+
+            # Backoff before next attempt (except after last)
+            if [[ $attempt -lt $max_attempts ]]; then
+                sleep $backoff
+            fi
+        done
+
+        if [[ $sent_successfully -eq 0 ]]; then
+            # If we reach here, sending failed after retries. Keep the payload.
+            echo "$line" >> "$tmp_file"
+            kept_any=1
+            echo "[background-sender] Failed to send notification after retries. Keeping it in the queue." >&2
+        fi
+    done < "$queue_file"
+
+    # Replace original queue file with the temp file if any payloads were kept
+    if [[ $kept_any -eq 1 ]]; then
+        mv "$tmp_file" "$queue_file"
+    else
+        # If all were sent, remove both the temp file and the original queue file
+        rm -f "$tmp_file" "$queue_file"
+    fi
+
+    # The trap will handle removing the lock file
+}
+
+# flush_queued_notifications
+#
+# This function is kept for compatibility but is no longer the primary mechanism.
+# The background sender `_send_and_process_queue_background` handles the queue.
+#
+# @param 1: queue file path
+flush_queued_notifications() {
+    local queue_file="$1"
+    local lock_file="${queue_file}.lock"
+
+    # If the script is started and there's a queue but no sender, this can kick it off.
+    if [[ -f "$queue_file" && ! -f "$lock_file" ]]; then
+        echo "[flush] Found a queue file without a running sender. Starting background process."
+        _send_and_process_queue_background "$queue_file" "$lock_file" &
+    fi
 }
 
 # --- Custom Functions ---
