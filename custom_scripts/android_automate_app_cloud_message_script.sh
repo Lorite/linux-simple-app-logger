@@ -316,6 +316,12 @@ on_new_activity() {
         return
     fi
 
+    # Special-case: Media/YouTube is handled per-track; do not group in running_activities
+    if [[ "$extra_activity_name" == "YouTube" ]]; then
+        # We rely on on_finished_activity to emit a record for the exact played segment
+        return
+    fi
+
     if [[ -z "${running_activities[$extra_activity_name]}" ]]; then
         echo "Starting new activity group: $extra_activity_name with title '$window_title'"
         # Store start time, initialize active duration, and store the window title
@@ -349,6 +355,21 @@ on_finished_activity() {
         return
     fi
 
+    # Special-case: Media/YouTube segments are logged immediately per track
+    if [[ "$extra_activity_name" == "YouTube" ]]; then
+        local end_time now start_time
+        now=$(date +%s)
+        end_time="$now"
+        start_time=$((now - duration))
+
+        local json_payload
+        json_payload=$(build_add_record_json_payload "YouTube" "$window_title" "$start_time" "$end_time" "$app_name")
+        # Ensure activity name is exactly "YouTube"
+        json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"[^\"]*\"/\"extra_activity_name\": \"YouTube\"/")
+        send_notification "$json_payload"
+        return
+    fi
+
     if [[ -n "${running_activities[$extra_activity_name]}" ]]; then
         local state_data="${running_activities[$extra_activity_name]}"
         local start_time="${state_data%%:*}"
@@ -363,7 +384,7 @@ on_finished_activity() {
 
 stop_activity() {
     local activity_name="$1"
-    local end_time="$2"
+    local end_time_now="$2"
 
     local state_data="${running_activities[$activity_name]}"
     local start_time="${state_data%%:*}"
@@ -380,13 +401,17 @@ stop_activity() {
         return
     fi
 
-    # Calculate the effective start time based on the actual accumulated duration
-    local effective_start_time=$((end_time - active_duration))
+    # Use the actual last-active time as the record end_time, not the time we send/decide
+    # last_active_end_time = start_time + active_duration
+    local last_active_end_time=$((start_time + active_duration))
+    # Calculate the effective start time so that duration = active_duration and
+    # the interval ends at the last moment of activity (not at decision/send time)
+    local effective_start_time=$((last_active_end_time - active_duration))
 
     # Build the JSON payload and send the notification
     local json_payload
     # Pass the activity name, last known window title, and originating app name
-    json_payload=$(build_add_record_json_payload "$activity_name" "$last_window_title" "$effective_start_time" "$end_time" "$last_app_name")
+    json_payload=$(build_add_record_json_payload "$activity_name" "$last_window_title" "$effective_start_time" "$last_active_end_time" "$last_app_name")
     # Manually set the activity name in the payload, as it might be different from what get_activity_info returns
     json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"[^\"]*\"/\"extra_activity_name\": \"$activity_name\"/")
 
