@@ -55,8 +55,9 @@ get_activity_info() {
         "code"|"code-insiders"|"jetbrains-idea"|"emacs"|"vim"|"sublime_text"|"ptyxis")
             activity="Code"
             case "$app_name" in
-                "code"|"code-insiders")     
-                    comment="$(echo "$window_title" | awk -F' - ' '{print $2}')"
+                "code"|"code-insiders")
+                    # Do not include window title for VS Code
+                    comment="VS Code"
                 ;;
                 "ptyxis")
                     comment="Ptyxis Terminal"
@@ -123,20 +124,32 @@ build_add_record_json_payload() {
     local window_title="$2"
     local start_time="$3"
     local end_time="$4"
+    local app_name="$5"  # originating application name
 
+    # Compute comment using the actual app and title
     local activity_info
-    activity_info=$(get_activity_info "$activity_name" "$window_title")
+    activity_info=$(get_activity_info "$app_name" "$window_title")
     local extra_activity_name
     extra_activity_name=$(echo "$activity_info" | sed -n '1p')
     local extra_record_comment
     extra_record_comment=$(echo "$activity_info" | sed -n '2p')
 
-    # If the comment is empty, use the window title
+    # If comment is empty, avoid window title for VS Code/Obsidian, else use title
     if [[ -z "$extra_record_comment" ]]; then
-        extra_record_comment="$window_title"
+        case "$app_name" in
+            code|code-insiders)
+                extra_record_comment="VS Code"
+                ;;
+            obsidian)
+                extra_record_comment="Obsidian"
+                ;;
+            *)
+                extra_record_comment="$window_title"
+                ;;
+        esac
     fi
 
-    # Format times as 'YYYY-MM-DD HH:MM:SS' (remove 'T' and timezone offset)
+    # Format times as 'YYYY-MM-DD HH:MM:SS'
     local start_time_iso
     start_time_iso=$(date -d "@$start_time" +"%Y-%m-%d %H:%M:%S")
     local end_time_iso
@@ -308,7 +321,8 @@ on_new_activity() {
         # Store start time, initialize active duration, and store the window title
         local start_time
         start_time=$(date +%s)
-        running_activities["$extra_activity_name"]="$start_time:0:$window_title"
+        # Store: start_time:active_duration:last_window_title:last_app_name
+        running_activities["$extra_activity_name"]="$start_time:0:$window_title:$app_name"
     fi
 }
 
@@ -338,12 +352,12 @@ on_finished_activity() {
     if [[ -n "${running_activities[$extra_activity_name]}" ]]; then
         local state_data="${running_activities[$extra_activity_name]}"
         local start_time="${state_data%%:*}"
-        local active_duration_and_title="${state_data#*:}"
-        local active_duration="${active_duration_and_title%%:*}"
-        
+        local rest_after_start="${state_data#*:}"
+        local active_duration="${rest_after_start%%:*}"
+        local _rest_after_duration="${rest_after_start#*:}"
+        # Update duration; set the last window title and last app name to the most recent values
         local new_duration=$((active_duration + duration))
-        # Update duration and window title
-        running_activities["$extra_activity_name"]="$start_time:$new_duration:$window_title"
+        running_activities["$extra_activity_name"]="$start_time:$new_duration:$window_title:$app_name"
     fi
 }
 
@@ -353,9 +367,11 @@ stop_activity() {
 
     local state_data="${running_activities[$activity_name]}"
     local start_time="${state_data%%:*}"
-    local active_duration_and_title="${state_data#*:}"
-    local active_duration="${active_duration_and_title%%:*}"
-    local last_window_title="${active_duration_and_title#*:}"
+    local rest_after_start="${state_data#*:}"
+    local active_duration="${rest_after_start%%:*}"
+    local rest_after_duration="${rest_after_start#*:}"
+    local last_window_title="${rest_after_duration%%:*}"
+    local last_app_name="${rest_after_duration#*:}"
     
     # only build the json if more than 2 minutes and 30 seconds of activity
     if (( active_duration < 150 )); then
@@ -369,8 +385,8 @@ stop_activity() {
 
     # Build the JSON payload and send the notification
     local json_payload
-    # Pass the activity name and last known window title to get the correct comment
-    json_payload=$(build_add_record_json_payload "$activity_name" "$last_window_title" "$effective_start_time" "$end_time")
+    # Pass the activity name, last known window title, and originating app name
+    json_payload=$(build_add_record_json_payload "$activity_name" "$last_window_title" "$effective_start_time" "$end_time" "$last_app_name")
     # Manually set the activity name in the payload, as it might be different from what get_activity_info returns
     json_payload=$(echo "$json_payload" | sed "s/\"extra_activity_name\": \"[^\"]*\"/\"extra_activity_name\": \"$activity_name\"/")
 
@@ -385,13 +401,15 @@ update_youtube_activity_duration() {
     if [[ "$player_status" == "Playing" && -n "${running_activities["YouTube"]}" ]]; then
         local state_data="${running_activities["YouTube"]}"
         local start_time="${state_data%%:*}"
-        local active_duration_and_title="${state_data#*:}"
-        local active_duration="${active_duration_and_title%%:*}"
-        local last_window_title="${active_duration_and_title#*:}"
+        local rest_after_start="${state_data#*:}"
+        local active_duration="${rest_after_start%%:*}"
+        local rest_after_duration="${rest_after_start#*:}"
+        local last_window_title="${rest_after_duration%%:*}"
+        local last_app_name="${rest_after_duration#*:}"
 
         # Increment the duration by the sleep interval from the main script
         local new_duration=$((active_duration + 1)) # Assuming sleep interval is 1
-        running_activities["YouTube"]="$start_time:$new_duration:$last_window_title"
+        running_activities["YouTube"]="$start_time:$new_duration:$last_window_title:$last_app_name"
     fi
 }
 
