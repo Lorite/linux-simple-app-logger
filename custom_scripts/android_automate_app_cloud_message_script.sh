@@ -5,7 +5,15 @@
 # at different points in the main script's execution.
 
 # --- Configuration ---
-ACTIVITY_PERCENTAGE_THRESHOLD=50 # Stop activity if active for less than this percentage
+# Grace-period ("slack") configuration for when to stop an inactive activity.
+# Slack grows sublinearly with the activity's active duration using:
+#   slack_minutes = SLACK_COEFF * (active_minutes ^ SLACK_EXPONENT)
+# Example targets: 5 min → ~2 min slack, 60 min → ~5 min slack when EXPONENT≈0.369 and COEFF≈1.0
+SLACK_EXPONENT=${SLACK_EXPONENT:-0.369}
+SLACK_COEFF=${SLACK_COEFF:-1.0}
+# Clamp slack in seconds to avoid too small/large waits
+SLACK_MIN_SECONDS=${SLACK_MIN_SECONDS:-60}   # floor: 1 minute
+SLACK_MAX_SECONDS=${SLACK_MAX_SECONDS:-900}  # ceil: 15 minutes
 declare -A running_activities
 
 # --- Helper Functions ---
@@ -171,6 +179,41 @@ build_notification_json() {
       "priority": "normal",
       "payload": %s
     }' "$AUTOMATE_ANDROID_APP_SECRET" "$AUTOMATE_ANDROID_APP_TO" "$AUTOMATE_ANDROID_APP_DEVICE" "$payload_json"
+}
+
+# slack_seconds_for_active_duration
+#
+# Compute slack (grace period) in seconds given an active duration in seconds.
+# Formula (minutes domain): S(d) = SLACK_COEFF * d^SLACK_EXPONENT, then convert to seconds and clamp.
+# Uses awk for exp()/log() to avoid extra dependencies.
+slack_seconds_for_active_duration() {
+    local active_sec="$1"
+    local alpha="${SLACK_EXPONENT}"
+    local coeff="${SLACK_COEFF}"
+    local min_s="${SLACK_MIN_SECONDS}"
+    local max_s="${SLACK_MAX_SECONDS}"
+
+    # If duration is not positive, return minimum slack
+    if [[ -z "$active_sec" || "$active_sec" -le 0 ]]; then
+        echo "$min_s"
+        return
+    fi
+
+    # Work in minutes for the power-law, then convert to seconds
+    # slack_seconds = 60 * coeff * exp(alpha * ln(active_sec/60))
+    local slack
+    slack=$(awk -v s="${active_sec}" -v a="${alpha}" -v c="${coeff}" 'BEGIN {
+        d = s/60.0; if (d <= 0) { print 0; exit }
+        val = 60.0 * c * exp(a * log(d));
+        print val;
+    }')
+
+    # Clamp and round to integer seconds
+    local slack_int
+    slack_int=$(awk -v x="${slack}" -v min="${min_s}" -v max="${max_s}" 'BEGIN {
+        if (x < min) x = min; if (x > max) x = max; printf "%.0f", x;
+    }')
+    echo "$slack_int"
 }
 
 # send_notification
@@ -474,13 +517,18 @@ on_loop_interval() {
         local active_duration_and_title="${state_data#*:}"
         local active_duration="${active_duration_and_title%%:*}"
 
-        local total_elapsed_time=$((current_time - start_time))
+        # Idle time since last observed activity end
+        # last_active_end = start_time + active_duration
+        local last_active_end=$((start_time + active_duration))
+        local idle_time=$((current_time - last_active_end))
 
-        if (( total_elapsed_time > 0 )); then
-            local active_percentage=$(( (active_duration * 100) / total_elapsed_time ))
+        if (( idle_time > 0 )); then
+            # Compute allowed slack based on how long the activity was active
+            local slack_seconds
+            slack_seconds=$(slack_seconds_for_active_duration "$active_duration")
 
-            if (( active_percentage < ACTIVITY_PERCENTAGE_THRESHOLD )); then
-                echo "Stopping activity '$activity_name' due to low activity percentage ($active_percentage%)."
+            if (( idle_time > slack_seconds )); then
+                echo "Stopping activity '$activity_name' after idle ${idle_time}s (slack ${slack_seconds}s)."
                 stop_activity "$activity_name" "$current_time"
             fi
         fi
