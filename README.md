@@ -16,31 +16,72 @@ A simple Bash script to monitor and log active window information on a Linux des
 
 ## Dependencies
 
-This script relies on two command-line utilities that interact with the X11 windowing system.
+The logger can work on both X11 and Wayland, with compositor-specific helpers.
 
-- `xdotool`: To get the ID of the active window.
-- `xprop`: To get window properties like title and process ID (PID).
+- `xprop` (required): Reads window properties.
+- `xdotool` (X11/XWayland): Queries active window id, title, pid under X.
+- `kdotool` (KDE Wayland/X11): Queries active window id, title, pid via KWin API.
+- `gdbus` (Wayland GNOME, optional): Used to query GNOME Shell when X tools don’t apply.
 
 ## Installation
 
-1.  **Install Dependencies:**
-    You need to install `xdotool` and `xprop`. `xprop` is usually included in the `x11-utils` package.
+1. **Install Dependencies:**
+     Install `xprop` and at least one of `xdotool` (X11) or `kdotool` (KDE Wayland). `gdbus` is recommended on GNOME Wayland.
 
-    - On Debian/Ubuntu-based systems:
-      ```bash
-      sudo apt-get update
-      sudo apt-get install xdotool x11-utils
-      ```
-    - On Fedora/CentOS/RHEL-based systems:
-      ```bash
-      sudo dnf install xdotool xprop
-      ```
-    - On Arch Linux-based systems:
-      ```bash
-      sudo pacman -S xdotool xorg-xprop
-      ```
+     - On Debian/Ubuntu-based systems:
 
-2.  **Make the script executable:**
+         ```bash
+         sudo apt-get update
+         sudo apt-get install x11-utils xdotool
+         ```
+
+     - On Fedora/CentOS/RHEL-based systems:
+
+         ```bash
+         sudo dnf install xprop xdotool
+         ```
+
+     - On Arch Linux-based systems:
+
+         ```bash
+         sudo pacman -S xorg-xprop xdotool
+         ```
+
+### KDE Wayland: Install kdotool
+
+If you’re on KDE Wayland, `kdotool` provides accurate window IDs, titles, and PIDs via KWin.
+
+- Download a prebuilt binary from releases:
+    - Releases: [jinliu/kdotool releases](https://github.com/jinliu/kdotool/releases)
+- Extract the `kdotool` binary and place it in `/usr/local/bin` so it’s on your PATH:
+
+    ```bash
+    sudo install -m 0755 /path/to/kdotool /usr/local/bin/kdotool
+    which kdotool
+    kdotool --help
+    ```
+
+Alternatively, build from source (if no binary fits your system):
+
+```bash
+sudo apt update && sudo apt install -y git build-essential cmake pkg-config \
+    qtbase5-dev qtbase5-private-dev libkf5windowsystem-dev libkf5coreaddons-dev \
+    libkf5i18n-dev extra-cmake-modules
+git clone https://github.com/jinliu/kdotool.git
+cd kdotool
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+sudo cmake --install build
+```
+
+Notes:
+
+- On newer KDE/Qt stacks, Qt6/KF6 packages may be required instead of Qt5/KF5.
+- `kdotool` only works with KWin (KDE). It does not work on GNOME.
+- On GNOME Wayland, use the built-in `gdbus` fallback in this script; `kdotool` is not applicable.
+
+1. **Make the script executable:**
+
     ```bash
     chmod +x window_logger.sh
     ```
@@ -68,6 +109,10 @@ For a full list of options, you can use the `--help` flag:
 ```bash
 ./window_logger.sh --help
 ```
+
+Key options:
+
+- `--debug`: Print debug info (window id/title/app) each loop.
 
 ### Running on Startup
 
@@ -104,16 +149,17 @@ chmod +x ~/.config/autostart/window-logger.desktop
 
 Now, the script should start automatically the next time you log in.
 
-**GNOME Desktop Environment**
+### GNOME Desktop Environment
 
 If you are using GNOME, you can also use the "Startup Applications" tool:
-1.  Open "Startup Applications" (you can search for it in the Activities overview).
-2.  Click "Add".
-3.  Fill in the details:
-    -   **Name:** Window Activity Logger
-    -   **Command:** `/path/to/window_logger.sh` (with any arguments you need)
-    -   **Comment:** Log active window information
-4.  Click "Add".
+
+1. Open "Startup Applications" (you can search for it in the Activities overview).
+2. Click "Add".
+3. Fill in the details:
+   - **Name:** Window Activity Logger
+   - **Command:** `/path/to/window_logger.sh` (with any arguments you need)
+   - **Comment:** Log active window information
+4. Click "Add".
 
 ### Configuration
 
@@ -127,7 +173,16 @@ You can configure the script's behavior using command-line arguments.
 | `-p`, `--process-blacklist`| Regex to match process names to ignore.                                  | `""`    |
 | `-w`, `--window-blacklist`| Regex to match window titles to ignore.                                  | `""`    |
 | `-c`, `--custom-script`   | Path to a custom script file to source.                                  | `""`    |
+| `--debug`                 | Print debug info each loop (id/title/app).                               |         |
 | `-h`, `--help`            | Show the help message.                                                   |         |
+
+### Wayland/X11 Behavior
+
+The script adapts to your desktop:
+
+- KDE Wayland/X11: prefers `kdotool` (KWin) for window id/title/pid.
+- GNOME Wayland: uses `gdbus` to query the focused window when X tools can’t.
+- X11/XWayland: uses `xdotool` and `xprop`.
 
 #### Example
 
@@ -138,6 +193,7 @@ Here is an example of how to run the script with custom settings:
 ```
 
 This command will:
+
 - Save logs to the `~/activity-logs` directory.
 - Check for the active window every `5` seconds.
 - Only log activities that last longer than `10` seconds.
@@ -174,24 +230,25 @@ You would run the main script like this:
 
 The `custom_scripts/android_automate_app_cloud_message_script.sh` provides a more advanced example of what can be done with custom scripts. It integrates with the [Automate](https://llamalab.com/automate/) Android application to send real-time activity updates to your phone.
 
-#### Features
+#### Features (Automate Integration)
 
--   **Real-time Notifications**: Sends `start` and `stop` messages to Automate when you switch activities on your desktop.
--   **Activity Mapping**: Translates application names and window titles into meaningful activities (e.g., "Code", "Read", "Email", "Meeting").
--   **YouTube Tracking**: Detects when you are watching a YouTube video (in a browser) and sends specific updates for it.
+- **Real-time Notifications**: Sends `start` and `stop` messages to Automate when you switch activities on your desktop.
+- **Activity Mapping**: Translates application names and window titles into meaningful activities (e.g., "Code", "Read", "Email", "Meeting").
+- **YouTube Tracking**: Detects when you are watching a YouTube video (in a browser) and sends specific updates for it.
 
-#### Dependencies
+#### Dependencies (Automate Integration)
 
--   `playerctl`: Required for the YouTube tracking feature. You can install it on Debian/Ubuntu with `sudo apt-get install playerctl`.
+- `playerctl`: Required for the YouTube tracking feature. You can install it on Debian/Ubuntu with `sudo apt-get install playerctl`.
 
 #### Setup
 
-1.  **Configure Automate**: You need an Automate flow that can receive cloud messages. The script sends a JSON payload that your flow can parse.
-2.  **Set Environment Variables**: The script requires the following environment variables to be set. You can add them to your `~/.bashrc` or `~/.zshrc` file.
-    -   `AUTOMATE_ANDROID_APP_SECRET`: Your Automate cloud message secret.
-    -   `AUTOMATE_ANDROID_APP_TO`: The recipient of the message (usually your email).
-    -   `AUTOMATE_ANDROID_APP_DEVICE`: The target device name in Automate.
-3.  **Run the logger**:
+1. **Configure Automate**: You need an Automate flow that can receive cloud messages. The script sends a JSON payload that your flow can parse.
+2. **Set Environment Variables**: Add these to your `~/.bashrc` or `~/.zshrc` file.
+    - `AUTOMATE_ANDROID_APP_SECRET`: Your Automate cloud message secret.
+    - `AUTOMATE_ANDROID_APP_TO`: The recipient of the message (usually your email).
+    - `AUTOMATE_ANDROID_APP_DEVICE`: The target device name in Automate.
+3. **Run the logger**:
+
     ```bash
     ./window_logger.sh -c custom_scripts/android_automate_app_cloud_message_script.sh
     ```
@@ -208,7 +265,7 @@ The CSV file has the following columns:
 - `Time`: The time the window became inactive (`HH:MM:SS`).
 - `Duration`: The total time the window was active (`HH:MM:SS`).
 
-### Example
+### CSV Example
 
 ```csv
 "ptyxis"," ./window_logger.sh","2025-07-23","00:06:26","00:00:05"
