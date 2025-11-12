@@ -56,6 +56,31 @@ check_dependencies() {
     fi
 }
 
+# Cache environment/session/tool flags to avoid repeated checks
+init_env_flags() {
+    IS_WAYLAND=0; [[ "${XDG_SESSION_TYPE}" == "wayland" ]] && IS_WAYLAND=1
+    IS_KDE=0; IS_GNOME=0
+    if pgrep -x kwin_wayland >/dev/null 2>&1 || pgrep -x kwin_x11 >/dev/null 2>&1 || [[ -n "$KDE_FULL_SESSION" || "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
+        IS_KDE=1
+    fi
+    if pgrep -x gnome-shell >/dev/null 2>&1 || [[ "$XDG_CURRENT_DESKTOP" =~ GNOME ]]; then
+        IS_GNOME=1
+    fi
+    HAVE_XPROP=0; command -v xprop &>/dev/null && HAVE_XPROP=1
+    HAVE_XDOTOOL=0; command -v xdotool &>/dev/null && HAVE_XDOTOOL=1
+    HAVE_KDOTOOL=0; command -v kdotool &>/dev/null && HAVE_KDOTOOL=1
+    HAVE_GDBUS=0; command -v gdbus &>/dev/null && HAVE_GDBUS=1
+    # Detect AT-SPI (pyatspi) properly via output, not exit code
+    HAVE_ATSPI=$(python3 - <<'PY' 2>/dev/null
+try:
+    import pyatspi
+    print('1')
+except Exception:
+    print('0')
+PY
+    )
+}
+
 is_kde_session() {
     if pgrep -x kwin_wayland >/dev/null 2>&1 || pgrep -x kwin_x11 >/dev/null 2>&1; then
         return 0
@@ -177,188 +202,98 @@ get_output_file_for_today() {
     echo "$OUTPUT_FOLDER/$today/LORI_Activity_$today.csv"
 }
 
-get_active_window_id() {
-    # KDE Wayland/X11 via kdotool (returns KWin UUID)
-    if is_kde_session && command -v kdotool &>/dev/null; then
-        local kid
-        kid=$(kdotool getactivewindow 2>/dev/null || true)
-        if [[ -n "$kid" ]]; then
-            echo "$kid"
-            return
-        fi
-    fi
-    # GNOME Wayland: prefer gdbus/AT-SPI, avoid stale XWayland IDs
-    if [[ "${XDG_SESSION_TYPE}" == "wayland" ]] && is_gnome_session; then
-        if command -v gdbus &>/dev/null; then
-            local seq
-            seq=$(gnome_shell_eval "(() => { let w = global.display.get_focus_window(); return w ? String(w.get_stable_sequence()) : ''; })()")
-            if [[ -n "$seq" ]]; then
-                echo "GWM-${seq}"
-                return
-            fi
-        fi
-        # AT-SPI synthesized ID
-        local at_title at_app hash
-        readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
-        at_title="${__atspi_lines[0]}"; at_app="${__atspi_lines[1]}"
-        if [[ -n "$at_title$at_app" ]]; then
-            hash=$(printf '%s' "$at_app|$at_title" | md5sum | awk '{print $1}')
-            echo "GNA-${hash}"
-            return
-        fi
-        echo ""
-        return
-    fi
-
-    # X/XWayland fallback
-    if command -v xdotool &>/dev/null; then
-        local xid
-        xid=$(xdotool getactivewindow 2>/dev/null || true)
-        if [[ -n "$xid" ]]; then
-            echo "$xid"
-            return
-        fi
-    fi
-
-    echo ""
-}
-
-get_window_title() {
-    local window_id="$1"
-    if [[ -z "$window_id" ]]; then
-        echo ""
-        return
-    fi
-    # GNOME Wayland: prefer AT-SPI, then gdbus
-    if [[ "${XDG_SESSION_TYPE}" == "wayland" ]] && is_gnome_session; then
-        local val
-        # AT-SPI first
-        readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
-        val="${__atspi_lines[0]}"
-        if [[ -n "$val" ]]; then
-            echo "$val" | tr -d '\n\r'
-            return
-        fi
-        # gdbus as secondary
-        if command -v gdbus &>/dev/null; then
-            val=$(gnome_shell_eval "(() => { let w = global.display.get_focus_window(); return w ? w.get_title() : ''; })()")
-            if [[ -n "$val" ]]; then
-                echo "$val" | tr -d '\n\r'
-                return
-            fi
-        fi
-        # fall through to other paths
-    fi
-    # KDE Wayland/X11: prefer kdotool if window id is from KWin or we're in KDE
-    if is_kde_session && command -v kdotool &>/dev/null; then
-        local name_k
-        name_k=$(kdotool getwindowname "$window_id" 2>/dev/null || true)
-        if [[ -n "$name_k" ]]; then
-            echo "$name_k" | tr -d '\n\r'
-            return
-        fi
-    fi
-    # Try xdotool next (better under X/XWayland setups)
-    if command -v xdotool &>/dev/null; then
-        local name
-        name=$(xdotool getwindowname "$window_id" 2>/dev/null || true)
-        if [[ -n "$name" ]]; then
-            echo "$name" | tr -d '\n\r'
-            return
-        fi
-    fi
-
-    # Fallback to xprop. Filter out 'not found.' markers
-    local raw
-    raw=$(xprop -id "$window_id" WM_NAME 2>/dev/null)
-    if echo "$raw" | grep -qi 'not found'; then
-        raw=""
-    fi
-    if [[ -n "$raw" ]]; then
-        echo "$raw" | cut -d '=' -f 2 | sed 's/"//g' | tr -d '\n\r'
-        return
-    fi
-
-    echo ""
-}
-
-get_process_name() {
-    local window_id="$1"
-    if [[ -z "$window_id" ]]; then
-        echo ""
-        return
-    fi
-    local pid=""
-
-    # GNOME Wayland: prefer AT-SPI, then gdbus
-    if [[ "${XDG_SESSION_TYPE}" == "wayland" ]] && is_gnome_session; then
-        local val
-        # AT-SPI first
-        readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
-        val="${__atspi_lines[1]}"
-        if [[ -n "$val" ]]; then
-            echo "$val" | tr -d '\n\r'
-            return
-        fi
-        # gdbus secondary
-        if command -v gdbus &>/dev/null; then
-            val=$(gnome_shell_eval "(() => { const Shell = imports.gi.Shell; let w = global.display.get_focus_window(); if (!w) return ''; let wt = Shell.WindowTracker.get_default(); let app = wt.get_window_app(w); if (app) return app.get_name(); let c = w.get_wm_class && w.get_wm_class(); return c ? c : ''; })()")
-            if [[ -n "$val" ]]; then
-                echo "$val" | tr -d '\n\r'
-                return
-            fi
-        fi
-        # fall through
-    fi
-
-    # KDE Wayland/X11: prefer kdotool for PID if available
-    if is_kde_session && command -v kdotool &>/dev/null; then
-        pid=$(kdotool getwindowpid "$window_id" 2>/dev/null || true)
-    fi
-
-    # Try xdotool next (may still work under X/XWayland)
-    if [[ -z "$pid" ]] && command -v xdotool &>/dev/null; then
-        pid=$(xdotool getwindowpid "$window_id" 2>/dev/null || true)
-    fi
-
-    # Fallback to xprop and extract only digits
-    if [[ -z "$pid" ]]; then
-        pid=$(xprop -id "$window_id" _NET_WM_PID 2>/dev/null \
-            | awk -F' = ' '/_NET_WM_PID/ {print $2}' \
-            | tr -d ' ')
-    fi
-
-    # If PID is numeric and positive, resolve process name
+proc_name_from_pid() {
+    local pid="$1"
     if [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 0 )); then
         ps -p "$pid" -o comm= | tr -d '\n\r'
-        return
     fi
-
-    # As a next resort, use WM_CLASS (class part) as an app identifier
-    local wm_class
-    wm_class=$(xprop -id "$window_id" WM_CLASS 2>/dev/null)
-    if [[ -n "$wm_class" ]] && ! echo "$wm_class" | grep -qi 'not found'; then
-        # WM_CLASS(STRING) = "instance", "Class" -> take the Class token
-        echo "$wm_class" | awk -F', ' '{print $NF}' | tr -d ' "\n\r'
-        return
-    fi
-
-    echo ""
 }
+
+# Unified active window info: echoes 3 lines (id, title, app)
+get_active_info() {
+    local id="" title="" app="" hash seq
+
+    # GNOME Wayland path
+    if (( IS_WAYLAND == 1 && IS_GNOME == 1 )); then
+        if (( HAVE_GDBUS == 1 )); then
+            seq=$(gnome_shell_eval "(() => { let w = global.display.get_focus_window(); return w ? String(w.get_stable_sequence()) : ''; })()")
+            if [[ -n "$seq" ]]; then
+                id="GWM-${seq}"
+            fi
+        fi
+        if (( HAVE_ATSPI == 1 )); then
+            readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
+            title="${__atspi_lines[0]}"; app="${__atspi_lines[1]}"
+        fi
+        if [[ -z "$id" && -n "$title$app" ]]; then
+            hash=$(printf '%s' "$app|$title" | md5sum | awk '{print $1}')
+            id="GNA-${hash}"
+        fi
+        echo "$id"; echo "$title"; echo "$app"
+        return
+    fi
+
+    # KDE path via kdotool
+    if (( IS_KDE == 1 && HAVE_KDOTOOL == 1 )); then
+        id=$(kdotool getactivewindow 2>/dev/null || true)
+        title=$(kdotool getwindowname "$id" 2>/dev/null || true)
+        local pid=""; pid=$(kdotool getwindowpid "$id" 2>/dev/null || true)
+        app=$(proc_name_from_pid "$pid")
+        # Fallback to WM_CLASS if app empty
+        if [[ -z "$app" && $HAVE_XPROP -eq 1 && -n "$id" ]]; then
+            local wm_class
+            wm_class=$(xprop -id "$id" WM_CLASS 2>/dev/null)
+            if [[ -n "$wm_class" ]] && ! echo "$wm_class" | grep -qi 'not found'; then
+                app=$(echo "$wm_class" | awk -F', ' '{print $NF}' | tr -d ' "\n\r')
+            fi
+        fi
+        echo "$id"; echo "$title"; echo "$app"
+        return
+    fi
+
+    # X11/XWayland path via xdotool/xprop
+    if (( HAVE_XDOTOOL == 1 )); then
+        id=$(xdotool getactivewindow 2>/dev/null || true)
+        title=$(xdotool getwindowname "$id" 2>/dev/null || true)
+        local pid=""
+        pid=$(xdotool getwindowpid "$id" 2>/dev/null || true)
+        if [[ -z "$pid" && $HAVE_XPROP -eq 1 ]]; then
+            pid=$(xprop -id "$id" _NET_WM_PID 2>/dev/null | awk -F' = ' '/_NET_WM_PID/ {print $2}' | tr -d ' ')
+        fi
+        app=$(proc_name_from_pid "$pid")
+        if [[ -z "$app" && $HAVE_XPROP -eq 1 && -n "$id" ]]; then
+            local wm_class
+            wm_class=$(xprop -id "$id" WM_CLASS 2>/dev/null)
+            if [[ -n "$wm_class" ]] && ! echo "$wm_class" | grep -qi 'not found'; then
+                app=$(echo "$wm_class" | awk -F', ' '{print $NF}' | tr -d ' "\n\r')
+            fi
+        fi
+        # Last resort title via xprop
+        if [[ -z "$title" && $HAVE_XPROP -eq 1 && -n "$id" ]]; then
+            local raw
+            raw=$(xprop -id "$id" WM_NAME 2>/dev/null)
+            if ! echo "$raw" | grep -qi 'not found'; then
+                title=$(echo "$raw" | cut -d '=' -f 2 | sed 's/"//g' | tr -d '\n\r')
+            fi
+        fi
+        echo "$id"; echo "$title"; echo "$app"
+        return
+    fi
+
+    # Default empty
+    echo ""; echo ""; echo ""
+}
+
+## Legacy per-field getters removed in favor of get_active_info()
 
 get_active_window_info() {
     local -n _window_id_ref=$1
     local -n _window_title_ref=$2
     local -n _app_name_ref=$3
-
-    _window_id_ref=$(get_active_window_id)
-    if [[ -z "$_window_id_ref" ]]; then
-        _window_title_ref=""
-        _app_name_ref=""
-        return
-    fi
-    _window_title_ref=$(get_window_title "$_window_id_ref")
-    _app_name_ref=$(get_process_name "$_window_id_ref")
+    readarray -t __info < <(get_active_info)
+    _window_id_ref="${__info[0]}"
+    _window_title_ref="${__info[1]}"
+    _app_name_ref="${__info[2]}"
 }
 
 fetch_media_title() {
@@ -594,7 +529,17 @@ main() {
         get_active_window_info current_window_id current_window_title current_app_name
 
         if [[ -n "$DEBUG" ]]; then
-            echo "[debug] id=$current_window_id title=$current_window_title app=$current_app_name"
+            local backend_src="none"
+            if [[ "$current_window_id" == GWM-* ]]; then
+                backend_src="gnome-gdbus"
+            elif [[ "$current_window_id" == GNA-* ]]; then
+                backend_src="gnome-atspi"
+            elif [[ "$current_window_id" =~ ^[0-9]+$ ]]; then
+                backend_src="xdotool"
+            elif [[ -n "$current_window_id" ]]; then
+                backend_src="kdotool"
+            fi
+            echo "[debug] id=$current_window_id title=$current_window_title app=$current_app_name src=$backend_src"
         fi
 
         if [[ -z "$current_window_title" ]]; then
@@ -673,5 +618,6 @@ previous_media_comment=""
 media_start_time=0
 
 check_dependencies
+init_env_flags
 
 main "$@"
