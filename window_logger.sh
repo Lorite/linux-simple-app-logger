@@ -23,7 +23,7 @@ usage() {
     echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore. Default is empty."
     echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source. Default is 'custom_scripts/my_custom_script.sh'."
     echo "  --debug                         Print debug info (id/title/app each loop)."
-    echo " --summarize                     Generate today's summary and exit."
+    echo "  --summarize                     Generate today's summary and exit."
     echo "  -h, --help                      Show this help message."
     exit 0
 }
@@ -223,7 +223,16 @@ get_active_info() {
         fi
         if (( HAVE_ATSPI == 1 )); then
             readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
-            title="${__atspi_lines[0]}"; app="${__atspi_lines[1]}"
+            if (( ${#__atspi_lines[@]} >= 2 )); then
+                title="${__atspi_lines[0]}"
+                app="${__atspi_lines[1]}"
+            elif (( ${#__atspi_lines[@]} == 1 )); then
+                title="${__atspi_lines[0]}"
+                app=""
+            else
+                title=""
+                app=""
+            fi
         fi
         if [[ -z "$id" && -n "$title$app" ]]; then
             hash=$(printf '%s' "$app|$title" | md5sum | awk '{print $1}')
@@ -547,10 +556,9 @@ main() {
             continue
         fi
 
-          # Detect changes by ID, title, or app name (Wayland can reuse/stabilize IDs)
+          # Detect changes by ID or title (Wayland can reuse/stabilize IDs)
           if [[ "$current_window_id" != "$previous_window_id" \
-              || "$current_window_title" != "$previous_window_title" \
-              || "$current_app_name" != "$previous_app_name" ]]; then
+              || "$current_window_title" != "$previous_window_title" ]]; then
             log_previous_activity
 
             previous_window_id="$current_window_id"
