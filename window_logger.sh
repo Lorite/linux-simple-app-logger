@@ -22,18 +22,158 @@ usage() {
     echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore. Default is empty."
     echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore. Default is empty."
     echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source. Default is 'custom_scripts/my_custom_script.sh'."
-    echo " --summarize                     Generate today's summary and exit."
+    echo "  --debug                         Print debug info (id/title/app each loop)."
+    echo "  --summarize                     Generate today's summary and exit."
     echo "  -h, --help                      Show this help message."
     exit 0
 }
 
 check_dependencies() {
-    for cmd in xdotool xprop; do
-        if ! command -v "$cmd" &>/dev/null; then
-            echo "Error: Required command '$cmd' not found. Please install it." >&2
-            exit 1
+    # Require xprop
+    if ! command -v xprop &>/dev/null; then
+        echo "Error: Required command 'xprop' not found. Please install it." >&2
+        exit 1
+    fi
+    # Require at least one of xdotool or kdotool
+    if ! command -v xdotool &>/dev/null && ! command -v kdotool &>/dev/null; then
+        echo "Error: Neither 'xdotool' nor 'kdotool' found. Install one of them." >&2
+        exit 1
+    fi
+    # Optional: gdbus/AT-SPI for Wayland+GNOME fallback (do not fail if missing)
+    if [[ "${XDG_SESSION_TYPE}" == "wayland" ]] && pgrep -x gnome-shell >/dev/null 2>&1; then
+        local has_gdbus=1 has_atspi=1
+        if command -v gdbus &>/dev/null; then has_gdbus=0; fi
+        if python3 -c 'import pyatspi' 2>/dev/null; then has_atspi=0; fi
+        if (( has_gdbus != 0 )); then
+            echo "Note: 'gdbus' not found. GNOME Wayland gdbus path disabled." >&2
         fi
-    done
+        if (( has_atspi != 0 )); then
+            echo "Note: 'python3-pyatspi' not found. GNOME Wayland AT-SPI path disabled." >&2
+        fi
+        if (( has_gdbus != 0 && has_atspi != 0 )); then
+            echo "Warning: On GNOME Wayland with neither gdbus nor AT-SPI, title/app may be empty. Install: sudo apt install -y libglib2.0-bin python3-pyatspi at-spi2-core python3-gi" >&2
+        fi
+    fi
+}
+
+# Cache environment/session/tool flags to avoid repeated checks
+init_env_flags() {
+    IS_WAYLAND=0; [[ "${XDG_SESSION_TYPE}" == "wayland" ]] && IS_WAYLAND=1
+    IS_KDE=0; IS_GNOME=0
+    if pgrep -x kwin_wayland >/dev/null 2>&1 || pgrep -x kwin_x11 >/dev/null 2>&1 || [[ -n "$KDE_FULL_SESSION" || "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
+        IS_KDE=1
+    fi
+    if pgrep -x gnome-shell >/dev/null 2>&1 || [[ "$XDG_CURRENT_DESKTOP" =~ GNOME ]]; then
+        IS_GNOME=1
+    fi
+    HAVE_XPROP=0; command -v xprop &>/dev/null && HAVE_XPROP=1
+    HAVE_XDOTOOL=0; command -v xdotool &>/dev/null && HAVE_XDOTOOL=1
+    HAVE_KDOTOOL=0; command -v kdotool &>/dev/null && HAVE_KDOTOOL=1
+    HAVE_GDBUS=0; command -v gdbus &>/dev/null && HAVE_GDBUS=1
+    # Detect AT-SPI (pyatspi) properly via output, not exit code
+    HAVE_ATSPI=$(python3 - <<'PY' 2>/dev/null
+try:
+    import pyatspi
+    print('1')
+except Exception:
+    print('0')
+PY
+    )
+}
+
+is_kde_session() {
+    if pgrep -x kwin_wayland >/dev/null 2>&1 || pgrep -x kwin_x11 >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ -n "$KDE_FULL_SESSION" || "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
+        return 0
+    fi
+    return 1
+}
+
+is_gnome_session() {
+    if pgrep -x gnome-shell >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ "$XDG_CURRENT_DESKTOP" =~ GNOME ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# Evaluate JavaScript in GNOME Shell via DBus and return the string result
+# Only returns output if Eval succeeded (true); otherwise prints nothing
+gnome_shell_eval() {
+    local js="$1"
+    local out val escaped gv_arg
+    # Wrap as a GVariant string literal to satisfy gdbus parsing
+    escaped=$(printf "%s" "$js" | sed "s/'/'\\''/g")
+    gv_arg="'$escaped'"
+    out=$(gdbus call --session \
+          --dest org.gnome.Shell \
+          --object-path /org/gnome/Shell \
+          --method org.gnome.Shell.Eval \
+          "$gv_arg" 2>/dev/null || true)
+    # Expect format: (true, '...') or (false, '...')
+    if echo "$out" | grep -q "^(true,"; then
+        val=$(echo "$out" | awk -F", '" '{print $2}' | sed "s/')$//")
+        printf "%s" "$val"
+    fi
+}
+
+# GNOME Wayland: read focused window title and app via AT-SPI (python3-pyatspi)
+# Prints two lines: title then app name. Prints nothing on failure.
+gnome_atspi_get_title_app() {
+    python3 - "$@" 2>/dev/null <<'PY'
+import sys
+try:
+    import pyatspi
+except Exception:
+    pyatspi = None
+title = ''
+appname = ''
+try:
+    if pyatspi is not None:
+        desktop = pyatspi.Registry.getDesktop(0)
+        focus = None
+        try:
+            focus = desktop.getFocus()
+        except Exception:
+            focus = None
+        # Fallback: search for ACTIVE/FOCUSED frame
+        if focus is None:
+            try:
+                for i in range(desktop.childCount):
+                    app = desktop.getChildAtIndex(i)
+                    for j in range(getattr(app, 'childCount', 0)):
+                        w = app.getChildAtIndex(j)
+                        try:
+                            st = w.getState()
+                            # Prefer focused, else active
+                            if st.contains(pyatspi.STATE_FOCUSED) or st.contains(pyatspi.STATE_ACTIVE):
+                                focus = w
+                                raise StopIteration
+                        except Exception:
+                            pass
+            except StopIteration:
+                pass
+            except Exception:
+                pass
+        if focus is not None:
+            try:
+                title = focus.name or ''
+            except Exception:
+                title = ''
+            try:
+                app = focus.getApplication() if hasattr(focus, 'getApplication') else None
+                appname = (app.name if app and hasattr(app, 'name') else '') or ''
+            except Exception:
+                appname = ''
+except Exception:
+    pass
+print(title)
+print(appname)
+PY
 }
 
 check_output_folder() {
@@ -62,47 +202,107 @@ get_output_file_for_today() {
     echo "$OUTPUT_FOLDER/$today/LORI_Activity_$today.csv"
 }
 
-get_active_window_id() {
-    xdotool getactivewindow 2>/dev/null
-}
-
-get_window_title() {
-    local window_id="$1"
-    if [[ -z "$window_id" ]]; then
-        echo ""
-        return
-    fi
-    xprop -id "$window_id" WM_NAME 2>/dev/null | cut -d '=' -f 2 | sed 's/"//g' | tr -d '\n\r'
-}
-
-get_process_name() {
-    local window_id="$1"
-    if [[ -z "$window_id" ]]; then
-        echo ""
-        return
-    fi
-    local pid
-    pid=$(xprop -id "$window_id" _NET_WM_PID 2>/dev/null | cut -d '=' -f 2 | tr -d ' ')
-    if [[ -n "$pid" && "$pid" -gt 0 ]]; then
+proc_name_from_pid() {
+    local pid="$1"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 0 )); then
         ps -p "$pid" -o comm= | tr -d '\n\r'
-    else
-        echo ""
     fi
 }
+
+# Unified active window info: echoes 3 lines (id, title, app)
+get_active_info() {
+    local id="" title="" app="" hash seq
+
+    # GNOME Wayland path
+    if (( IS_WAYLAND == 1 && IS_GNOME == 1 )); then
+        if (( HAVE_GDBUS == 1 )); then
+            seq=$(gnome_shell_eval "(() => { let w = global.display.get_focus_window(); return w ? String(w.get_stable_sequence()) : ''; })()")
+            if [[ -n "$seq" ]]; then
+                id="GWM-${seq}"
+            fi
+        fi
+        if (( HAVE_ATSPI == 1 )); then
+            readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
+            if (( ${#__atspi_lines[@]} >= 2 )); then
+                title="${__atspi_lines[0]}"
+                app="${__atspi_lines[1]}"
+            elif (( ${#__atspi_lines[@]} == 1 )); then
+                title="${__atspi_lines[0]}"
+                app=""
+            else
+                title=""
+                app=""
+            fi
+        fi
+        if [[ -z "$id" && -n "$title$app" ]]; then
+            hash=$(printf '%s' "$app|$title" | md5sum | awk '{print $1}')
+            id="GNA-${hash}"
+        fi
+        echo "$id"; echo "$title"; echo "$app"
+        return
+    fi
+
+    # KDE path via kdotool
+    if (( IS_KDE == 1 && HAVE_KDOTOOL == 1 )); then
+        id=$(kdotool getactivewindow 2>/dev/null || true)
+        title=$(kdotool getwindowname "$id" 2>/dev/null || true)
+        local pid=""; pid=$(kdotool getwindowpid "$id" 2>/dev/null || true)
+        app=$(proc_name_from_pid "$pid")
+        # Fallback to WM_CLASS if app empty
+        if [[ -z "$app" && $HAVE_XPROP -eq 1 && -n "$id" ]]; then
+            local wm_class
+            wm_class=$(xprop -id "$id" WM_CLASS 2>/dev/null)
+            if [[ -n "$wm_class" ]] && ! echo "$wm_class" | grep -qi 'not found'; then
+                app=$(echo "$wm_class" | awk -F', ' '{print $NF}' | tr -d ' "\n\r')
+            fi
+        fi
+        echo "$id"; echo "$title"; echo "$app"
+        return
+    fi
+
+    # X11/XWayland path via xdotool/xprop
+    if (( HAVE_XDOTOOL == 1 )); then
+        id=$(xdotool getactivewindow 2>/dev/null || true)
+        title=$(xdotool getwindowname "$id" 2>/dev/null || true)
+        local pid=""
+        pid=$(xdotool getwindowpid "$id" 2>/dev/null || true)
+        if [[ -z "$pid" && $HAVE_XPROP -eq 1 ]]; then
+            pid=$(xprop -id "$id" _NET_WM_PID 2>/dev/null | awk -F' = ' '/_NET_WM_PID/ {print $2}' | tr -d ' ')
+        fi
+        app=$(proc_name_from_pid "$pid")
+        if [[ -z "$app" && $HAVE_XPROP -eq 1 && -n "$id" ]]; then
+            local wm_class
+            wm_class=$(xprop -id "$id" WM_CLASS 2>/dev/null)
+            if [[ -n "$wm_class" ]] && ! echo "$wm_class" | grep -qi 'not found'; then
+                app=$(echo "$wm_class" | awk -F', ' '{print $NF}' | tr -d ' "\n\r')
+            fi
+        fi
+        # Last resort title via xprop
+        if [[ -z "$title" && $HAVE_XPROP -eq 1 && -n "$id" ]]; then
+            local raw
+            raw=$(xprop -id "$id" WM_NAME 2>/dev/null)
+            if ! echo "$raw" | grep -qi 'not found'; then
+                title=$(echo "$raw" | cut -d '=' -f 2 | sed 's/"//g' | tr -d '\n\r')
+            fi
+        fi
+        echo "$id"; echo "$title"; echo "$app"
+        return
+    fi
+
+    # Default empty
+    echo ""; echo ""; echo ""
+}
+
+## Legacy per-field getters removed in favor of get_active_info()
 
 get_active_window_info() {
     local -n _window_id_ref=$1
     local -n _window_title_ref=$2
     local -n _app_name_ref=$3
-
-    _window_id_ref=$(get_active_window_id)
-    if [[ -z "$_window_id_ref" ]]; then
-        _window_title_ref=""
-        _app_name_ref=""
-        return
-    fi
-    _window_title_ref=$(get_window_title "$_window_id_ref")
-    _app_name_ref=$(get_process_name "$_window_id_ref")
+    readarray -t __info < <(get_active_info)
+    _window_id_ref="${__info[0]}"
+    _window_title_ref="${__info[1]}"
+    _app_name_ref="${__info[2]}"
 }
 
 fetch_media_title() {
@@ -176,6 +376,14 @@ is_blacklisted() {
     local app_name="$1"
     local window_title="$2"
 
+    # Built-in: ignore GNOME Shell overview (Main stage)
+    local _app_lc _title_lc
+    _app_lc="${app_name,,}"
+    _title_lc="${window_title,,}"
+    if [[ "$_app_lc" == "gnome-shell" && "$_title_lc" == "main stage" ]]; then
+        return 0
+    fi
+
     if [[ -n "$PROCESS_BLACKLIST_REGEX" ]] && [[ "$app_name" =~ $PROCESS_BLACKLIST_REGEX ]]; then
         return 0
     fi
@@ -197,9 +405,14 @@ log_previous_activity() {
             on_finished_activity "$previous_app_name" "$previous_window_title" "$duration" # user-defined external function call
         fi
         
+        # Only log if we have sensible identifiers (avoid WM_CLASS/WM_NAME not found noise)
         if [[ $duration -ge $MIN_LOG_DURATION ]]; then
-            if ! is_blacklisted "$previous_app_name" "$previous_window_title"; then
-                log_message "$previous_app_name" "$previous_window_title" "$duration"
+            if [[ -n "$previous_app_name" && -n "$previous_window_title" ]] \
+               && [[ ! "$previous_app_name" =~ ^WM_CLASS:notfound\.$ ]] \
+               && [[ ! "$previous_window_title" =~ ^WM_NAME:\ +not\ found\.$ ]]; then
+                if ! is_blacklisted "$previous_app_name" "$previous_window_title"; then
+                    log_message "$previous_app_name" "$previous_window_title" "$duration"
+                fi
             fi
         fi
     fi
@@ -287,6 +500,10 @@ main() {
                 calculate_todays_most_used_apps
                 exit 0
                 ;;
+            --debug)
+                DEBUG=1
+                shift 1
+                ;;
             -h|--help)
                 usage
                 ;;
@@ -328,17 +545,40 @@ main() {
         local current_app_name
         get_active_window_info current_window_id current_window_title current_app_name
 
+        if [[ -n "$DEBUG" ]]; then
+            local backend_src="none"
+            if [[ "$current_window_id" == GWM-* ]]; then
+                backend_src="gnome-gdbus"
+            elif [[ "$current_window_id" == GNA-* ]]; then
+                backend_src="gnome-atspi"
+            elif [[ "$current_window_id" =~ ^[0-9]+$ ]]; then
+                backend_src="xdotool"
+            elif [[ -n "$current_window_id" ]]; then
+                backend_src="kdotool"
+            fi
+            echo "[debug] id=$current_window_id title=$current_window_title app=$current_app_name src=$backend_src"
+        fi
+
         if [[ -z "$current_window_title" ]]; then
             sleep "$SLEEP_INTERVAL"
             continue
         fi
 
-        if [[ "$current_window_id" != "$previous_window_id" || "$current_window_title" != "$previous_window_title" ]]; then
+        # Skip blacklisted overlays (e.g., GNOME Shell Main stage) without ending previous activity
+        if is_blacklisted "$current_app_name" "$current_window_title"; then
+            sleep "$SLEEP_INTERVAL"
+            continue
+        fi
+
+          # Detect changes by ID or title (Wayland can reuse/stabilize IDs)
+          if [[ "$current_window_id" != "$previous_window_id" \
+              || "$current_window_title" != "$previous_window_title" ]]; then
             log_previous_activity
 
             previous_window_id="$current_window_id"
             previous_app_name="$current_app_name"
             previous_window_title="$current_window_title"
+
             start_time=$(date +%s)
             if declare -f on_new_activity > /dev/null; then
                 on_new_activity "$previous_app_name" "$previous_window_title" # user-defined external function call
@@ -400,5 +640,6 @@ previous_media_comment=""
 media_start_time=0
 
 check_dependencies
+init_env_flags
 
 main "$@"
