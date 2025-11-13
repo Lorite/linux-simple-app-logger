@@ -376,6 +376,14 @@ is_blacklisted() {
     local app_name="$1"
     local window_title="$2"
 
+    # Built-in: ignore GNOME Shell overview (Main stage)
+    local _app_lc _title_lc
+    _app_lc="${app_name,,}"
+    _title_lc="${window_title,,}"
+    if [[ "$_app_lc" == "gnome-shell" && "$_title_lc" == "main stage" ]]; then
+        return 0
+    fi
+
     if [[ -n "$PROCESS_BLACKLIST_REGEX" ]] && [[ "$app_name" =~ $PROCESS_BLACKLIST_REGEX ]]; then
         return 0
     fi
@@ -552,6 +560,12 @@ main() {
         fi
 
         if [[ -z "$current_window_title" ]]; then
+            sleep "$SLEEP_INTERVAL"
+            continue
+        fi
+
+        # Skip blacklisted overlays (e.g., GNOME Shell Main stage) without ending previous activity
+        if is_blacklisted "$current_app_name" "$current_window_title"; then
             sleep "$SLEEP_INTERVAL"
             continue
         fi
