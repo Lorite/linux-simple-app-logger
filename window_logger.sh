@@ -105,18 +105,19 @@ is_gnome_session() {
 # Only returns output if Eval succeeded (true); otherwise prints nothing
 gnome_shell_eval() {
     local js="$1"
-    local out val escaped gv_arg
-    # Wrap as a GVariant string literal to satisfy gdbus parsing
-    escaped=$(printf "%s" "$js" | sed "s/'/'\\''/g")
-    gv_arg="'$escaped'"
+    local out val escaped
+    # Escape single quotes for GVariant
+    escaped="${js//\'/\'\\\'\'}"
     out=$(gdbus call --session \
           --dest org.gnome.Shell \
           --object-path /org/gnome/Shell \
           --method org.gnome.Shell.Eval \
-          "$gv_arg" 2>/dev/null || true)
+          "'$escaped'" 2>/dev/null || true)
     # Expect format: (true, '...') or (false, '...')
-    if echo "$out" | grep -q "^(true,"; then
-        val=$(echo "$out" | awk -F", '" '{print $2}' | sed "s/')$//")
+    if [[ "$out" == "(true,"* ]]; then
+        # Extract value between (true, ' and ')
+        val="${out#*\'}"
+        val="${val%\')*}"
         printf "%s" "$val"
     fi
 }
@@ -209,34 +210,61 @@ proc_name_from_pid() {
     fi
 }
 
+# Bash-native simple hash (for id generation)
+bash_hash() {
+    local str="$1" h=0 i c
+    for (( i=0; i<${#str}; i++ )); do
+        c="${str:$i:1}"
+        printf -v c '%d' "'$c"
+        h=$(( (h * 31 + c) & 0x7FFFFFFF ))
+    done
+    printf '%x' "$h"
+}
+
 # Unified active window info: echoes 3 lines (id, title, app)
 get_active_info() {
     local id="" title="" app="" hash seq
+    local now=$(( $(date +%s) ))
 
-    # GNOME Wayland path
+    # GNOME Wayland path - heavily optimized to minimize subprocess calls
     if (( IS_WAYLAND == 1 && IS_GNOME == 1 )); then
         if (( HAVE_GDBUS == 1 )); then
-            seq=$(gnome_shell_eval "(() => { let w = global.display.get_focus_window(); return w ? String(w.get_stable_sequence()) : ''; })()")
-            if [[ -n "$seq" ]]; then
-                id="GWM-${seq}"
+            # Only query gdbus every 2 seconds OR if we suspect a change
+            if (( now - LAST_GDBUS_CHECK >= 2 )) || [[ -z "$CACHED_GNOME_SEQ" ]]; then
+                seq=$(gnome_shell_eval "(() => { let w = global.display.get_focus_window(); return w ? String(w.get_stable_sequence()) : ''; })()")
+                LAST_GDBUS_CHECK=$now
+                if [[ -n "$seq" && "$seq" != "$CACHED_GNOME_SEQ" ]]; then
+                    CACHED_GNOME_SEQ="$seq"
+                    # Sequence changed - fetch title/app via AT-SPI
+                    if (( HAVE_ATSPI == 1 )); then
+                        readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
+                        CACHED_GNOME_TITLE="${__atspi_lines[0]:-}"
+                        CACHED_GNOME_APP="${__atspi_lines[1]:-}"
+                    fi
+                fi
+            fi
+            # Use cached values
+            if [[ -n "$CACHED_GNOME_SEQ" ]]; then
+                id="GWM-${CACHED_GNOME_SEQ}"
+                title="$CACHED_GNOME_TITLE"
+                app="$CACHED_GNOME_APP"
             fi
         fi
-        if (( HAVE_ATSPI == 1 )); then
-            readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
-            if (( ${#__atspi_lines[@]} >= 2 )); then
-                title="${__atspi_lines[0]}"
-                app="${__atspi_lines[1]}"
-            elif (( ${#__atspi_lines[@]} == 1 )); then
-                title="${__atspi_lines[0]}"
-                app=""
-            else
-                title=""
-                app=""
+        # Fallback: AT-SPI without gdbus (only if no ID from gdbus)
+        if [[ -z "$id" ]] && (( HAVE_ATSPI == 1 )); then
+            # Only refresh AT-SPI every 2 seconds
+            if (( now - LAST_ATSPI_CHECK >= 2 )) || [[ -z "$CACHED_GNOME_TITLE" && -z "$CACHED_GNOME_APP" ]]; then
+                readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
+                CACHED_GNOME_TITLE="${__atspi_lines[0]:-}"
+                CACHED_GNOME_APP="${__atspi_lines[1]:-}"
+                LAST_ATSPI_CHECK=$now
             fi
-        fi
-        if [[ -z "$id" && -n "$title$app" ]]; then
-            hash=$(printf '%s' "$app|$title" | md5sum | awk '{print $1}')
-            id="GNA-${hash}"
+            title="$CACHED_GNOME_TITLE"
+            app="$CACHED_GNOME_APP"
+            if [[ -n "$title$app" ]]; then
+                hash=$(bash_hash "$app|$title")
+                id="GNA-${hash}"
+            fi
         fi
         echo "$id"; echo "$title"; echo "$app"
         return
@@ -324,6 +352,13 @@ fetch_media_title() {
 }
 
 handle_media_activity() {
+    # Only check playerctl every 3 seconds to reduce CPU usage
+    local now=$(date +%s)
+    if (( now - LAST_MEDIA_CHECK < 3 )); then
+        return
+    fi
+    LAST_MEDIA_CHECK=$now
+    
     local player_status
     player_status=$(playerctl status 2>/dev/null)
     
@@ -638,6 +673,14 @@ previous_app_name=""
 start_time=0
 previous_media_comment=""
 media_start_time=0
+
+# Cache for GNOME Wayland to reduce Python subprocess calls
+CACHED_GNOME_SEQ=""
+CACHED_GNOME_TITLE=""
+CACHED_GNOME_APP=""
+LAST_GDBUS_CHECK=0
+LAST_ATSPI_CHECK=0
+LAST_MEDIA_CHECK=0
 
 check_dependencies
 init_env_flags
