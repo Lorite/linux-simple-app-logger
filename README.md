@@ -21,7 +21,8 @@ The logger can work on both X11 and Wayland, with compositor-specific helpers.
 - `xprop` (required): Reads window properties.
 - `xdotool` (X11/XWayland): Queries active window id, title, pid under X.
 - `kdotool` (KDE Wayland/X11): Queries active window id, title, pid via KWin API.
-- `gdbus` (Wayland GNOME, optional): Used to query GNOME Shell when X tools don’t apply.
+- `gdbus` (Wayland GNOME, optional): Used for GNOME Shell DBus calls.
+- `window-calls-extended` GNOME extension (Wayland GNOME, optional but recommended): Preferred backend for focused window id/title/class.
 
 ## Installation
 
@@ -78,7 +79,22 @@ Notes:
 
 - On newer KDE/Qt stacks, Qt6/KF6 packages may be required instead of Qt5/KF5.
 - `kdotool` only works with KWin (KDE). It does not work on GNOME.
-- On GNOME Wayland, use the built-in `gdbus` fallback in this script; `kdotool` is not applicable.
+- On GNOME Wayland, this script now prefers the `window-calls-extended` extension when available, then falls back to built-in `gdbus` and AT-SPI paths.
+
+### GNOME Wayland: Install window-calls-extended (Recommended)
+
+If you are on GNOME Wayland, install and enable this extension for the most reliable focused-window detection:
+
+- Extension page: [window-calls-extended](https://extensions.gnome.org/extension/4974/window-calls-extended/)
+- Source: [hseliger/window-calls-extended](https://github.com/hseliger/window-calls-extended)
+
+Once enabled, `window_logger.sh` auto-detects it via DBus and uses it first.
+
+If needed, you can disable extension usage and force fallback behavior:
+
+```bash
+./window_logger.sh --disable-gnome-extension
+```
 
 1. **Make the script executable:**
 
@@ -173,6 +189,7 @@ You can configure the script's behavior using command-line arguments.
 | `-p`, `--process-blacklist`| Regex to match process names to ignore.                                  | `""`    |
 | `-w`, `--window-blacklist`| Regex to match window titles to ignore.                                  | `""`    |
 | `-c`, `--custom-script`   | Path to a custom script file to source.                                  | `""`    |
+| `--disable-gnome-extension` | Disable the GNOME `window-calls-extended` backend and use fallback detection. |         |
 | `--debug`                 | Print debug info each loop (id/title/app).                               |         |
 | `-h`, `--help`            | Show the help message.                                                   |         |
 
@@ -181,7 +198,7 @@ You can configure the script's behavior using command-line arguments.
 The script adapts to your desktop:
 
 - KDE Wayland/X11: prefers `kdotool` (KWin) for window id/title/pid.
-- GNOME Wayland: uses `gdbus` to query the focused window when X tools can’t.
+- GNOME Wayland: prefers `window-calls-extended` (if installed/enabled), then falls back to `gdbus`, then AT-SPI.
 - X11/XWayland: uses `xdotool` and `xprop`.
 
 #### Example

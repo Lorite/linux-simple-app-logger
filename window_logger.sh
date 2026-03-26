@@ -9,6 +9,9 @@ MIN_LOG_DURATION=2 # in seconds
 PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
 WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
 CUSTOM_SCRIPT_FILE="custom_scripts/my_custom_script.sh"        # Path to a custom script file to source.
+ATSPI_REFRESH_SECS=10 # Minimum seconds between AT-SPI probes
+ATSPI_SKIP_REGEX="forticlient|fortitray|notify|sublime-text|sublime_text|Sublime Text|nemo|nemo-desktop"
+USE_GNOME_WINDOWS_EXT=1 # Prefer window-calls-extended on GNOME Wayland when available
 
 # --- Functions ---
 
@@ -22,6 +25,7 @@ usage() {
     echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore. Default is empty."
     echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore. Default is empty."
     echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source. Default is 'custom_scripts/my_custom_script.sh'."
+    echo "  --disable-gnome-extension      Disable window-calls-extended backend on GNOME Wayland."
     echo "  --debug                         Print debug info (id/title/app each loop)."
     echo "  --summarize                     Generate today's summary and exit."
     echo "  -h, --help                      Show this help message."
@@ -70,6 +74,15 @@ init_env_flags() {
     HAVE_XDOTOOL=0; command -v xdotool &>/dev/null && HAVE_XDOTOOL=1
     HAVE_KDOTOOL=0; command -v kdotool &>/dev/null && HAVE_KDOTOOL=1
     HAVE_GDBUS=0; command -v gdbus &>/dev/null && HAVE_GDBUS=1
+    HAVE_GNOME_WINDOWS_EXT=0
+    if (( IS_WAYLAND == 1 && IS_GNOME == 1 && HAVE_GDBUS == 1 )); then
+        if gdbus introspect --session \
+            --dest org.gnome.Shell \
+            --object-path /org/gnome/Shell/Extensions/WindowsExt \
+            >/dev/null 2>&1; then
+            HAVE_GNOME_WINDOWS_EXT=1
+        fi
+    fi
     # Detect AT-SPI (pyatspi) properly via output, not exit code
     HAVE_ATSPI=$(python3 - <<'PY' 2>/dev/null
 try:
@@ -120,6 +133,102 @@ gnome_shell_eval() {
         val="${val%\')*}"
         printf "%s" "$val"
     fi
+}
+
+# Decode JSON from gnome-shell eval into lines: seq, title, app
+decode_focus_json() {
+    python3 - <<'PY'
+import json,sys
+try:
+    data=sys.stdin.read()
+    obj=json.loads(data)
+    for key in ("seq","title","app"):
+        val=obj.get(key,"")
+        if not isinstance(val,str):
+            val=""
+        print(val)
+except Exception:
+    pass
+PY
+}
+
+# Read a value from window-calls-extended extension DBus API
+gnome_windows_ext_call() {
+    local method="$1"
+    local out
+    out=$(gdbus call --session \
+          --dest org.gnome.Shell \
+          --object-path /org/gnome/Shell/Extensions/WindowsExt \
+          --method "org.gnome.Shell.Extensions.WindowsExt.${method}" \
+          2>/dev/null || true)
+
+    if [[ -z "$out" ]]; then
+        return
+    fi
+
+    python3 - "$out" <<'PY'
+import ast
+import sys
+
+raw = sys.argv[1].strip() if len(sys.argv) > 1 else ""
+try:
+    value = ast.literal_eval(raw)
+    if isinstance(value, tuple) and value:
+        item = value[0]
+        if item is None:
+            item = ""
+        print(str(item), end="")
+except Exception:
+    pass
+PY
+}
+
+# GNOME Wayland: read focused window id/title/app via window-calls-extended extension
+# Prints three lines: id then title then app class. Prints empty lines on failure.
+gnome_windows_ext_get_active_info() {
+    local payload
+    payload=$(gnome_windows_ext_call "List")
+
+    if [[ -z "$payload" ]]; then
+        echo ""
+        echo ""
+        echo ""
+        return
+    fi
+
+    python3 - "$payload" <<'PY'
+import json
+import sys
+
+def clean_string(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+try:
+    windows = json.loads(sys.argv[1] if len(sys.argv) > 1 else "")
+    focused = None
+    if isinstance(windows, list):
+        for item in windows:
+            if isinstance(item, dict) and item.get("focus") is True:
+                focused = item
+                break
+
+    if not isinstance(focused, dict):
+        print("")
+        print("")
+        print("")
+    else:
+        print(clean_string(focused.get("id")))
+        print(clean_string(focused.get("title")))
+        print(clean_string(focused.get("class")))
+except Exception:
+    print("")
+    print("")
+    print("")
+PY
 }
 
 # GNOME Wayland: read focused window title and app via AT-SPI (python3-pyatspi)
@@ -226,21 +335,35 @@ get_active_info() {
     local id="" title="" app="" hash seq
     local now=$(( $(date +%s) ))
 
-    # GNOME Wayland path - heavily optimized to minimize subprocess calls
+    # GNOME Wayland path - prefer extension, then Shell Eval, then AT-SPI fallback
     if (( IS_WAYLAND == 1 && IS_GNOME == 1 )); then
+        if (( USE_GNOME_WINDOWS_EXT == 1 && HAVE_GNOME_WINDOWS_EXT == 1 )); then
+            readarray -t __ext_info < <(gnome_windows_ext_get_active_info)
+            local ext_id="${__ext_info[0]:-}"
+            local ext_title="${__ext_info[1]:-}"
+            local ext_app="${__ext_info[2]:-}"
+
+            # Prefer extension if it returned useful focus details.
+            if [[ -n "$ext_id" && ( -n "$ext_title" || -n "$ext_app" ) ]]; then
+                id="GEX-${ext_id}"
+                title="$ext_title"
+                app="$ext_app"
+                echo "$id"; echo "$title"; echo "$app"
+                return
+            fi
+        fi
+
         if (( HAVE_GDBUS == 1 )); then
-            # Only query gdbus every 2 seconds OR if we suspect a change
+            # Poll gdbus every 2 seconds OR if we suspect a change
             if (( now - LAST_GDBUS_CHECK >= 2 )) || [[ -z "$CACHED_GNOME_SEQ" ]]; then
-                seq=$(gnome_shell_eval "(() => { let w = global.display.get_focus_window(); return w ? String(w.get_stable_sequence()) : ''; })()")
+                local json
+                json=$(gnome_shell_eval "(() => { try { let w = global.display.get_focus_window(); if (!w) return ''; return JSON.stringify({ seq: String(w.get_stable_sequence()), title: w.get_title() || '', app: w.get_wm_class() || '' }); } catch (e) { return ''; } })()")
                 LAST_GDBUS_CHECK=$now
-                if [[ -n "$seq" && "$seq" != "$CACHED_GNOME_SEQ" ]]; then
-                    CACHED_GNOME_SEQ="$seq"
-                    # Sequence changed - fetch title/app via AT-SPI
-                    if (( HAVE_ATSPI == 1 )); then
-                        readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
-                        CACHED_GNOME_TITLE="${__atspi_lines[0]:-}"
-                        CACHED_GNOME_APP="${__atspi_lines[1]:-}"
-                    fi
+                if [[ -n "$json" ]]; then
+                    readarray -t __json_fields < <(printf '%s' "$json" | decode_focus_json)
+                    CACHED_GNOME_SEQ="${__json_fields[0]:-}"
+                    CACHED_GNOME_TITLE="${__json_fields[1]:-}"
+                    CACHED_GNOME_APP="${__json_fields[2]:-}"
                 fi
             fi
             # Use cached values
@@ -250,20 +373,33 @@ get_active_info() {
                 app="$CACHED_GNOME_APP"
             fi
         fi
-        # Fallback: AT-SPI without gdbus (only if no ID from gdbus)
-        if [[ -z "$id" ]] && (( HAVE_ATSPI == 1 )); then
-            # Only refresh AT-SPI every 2 seconds
-            if (( now - LAST_ATSPI_CHECK >= 2 )) || [[ -z "$CACHED_GNOME_TITLE" && -z "$CACHED_GNOME_APP" ]]; then
-                readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
-                CACHED_GNOME_TITLE="${__atspi_lines[0]:-}"
-                CACHED_GNOME_APP="${__atspi_lines[1]:-}"
-                LAST_ATSPI_CHECK=$now
+        # Fallback: AT-SPI only if enabled, needed, and not skipped
+        if (( HAVE_ATSPI == 1 )); then
+            local skip_atspi=0 need_atspi=0
+            local app_lc="${CACHED_GNOME_APP,,}"
+            local title_lc="${CACHED_GNOME_TITLE,,}"
+            if [[ -n "$ATSPI_SKIP_REGEX" ]]; then
+                if [[ "$app_lc" =~ $ATSPI_SKIP_REGEX || "$title_lc" =~ $ATSPI_SKIP_REGEX ]]; then
+                    skip_atspi=1
+                fi
             fi
-            title="$CACHED_GNOME_TITLE"
-            app="$CACHED_GNOME_APP"
-            if [[ -n "$title$app" ]]; then
-                hash=$(bash_hash "$app|$title")
-                id="GNA-${hash}"
+            if [[ -z "$id" || ( -z "$title" && -z "$app" ) ]]; then
+                need_atspi=1
+            fi
+            if (( skip_atspi == 0 && need_atspi == 1 )); then
+                # Only refresh AT-SPI every ATSPI_REFRESH_SECS seconds
+                if (( now - LAST_ATSPI_CHECK >= ATSPI_REFRESH_SECS )) || [[ -z "$CACHED_GNOME_TITLE" && -z "$CACHED_GNOME_APP" ]]; then
+                    readarray -t __atspi_lines < <(gnome_atspi_get_title_app)
+                    CACHED_GNOME_TITLE="${__atspi_lines[0]:-}"
+                    CACHED_GNOME_APP="${__atspi_lines[1]:-}"
+                    LAST_ATSPI_CHECK=$now
+                fi
+                title="$CACHED_GNOME_TITLE"
+                app="$CACHED_GNOME_APP"
+                if [[ -z "$id" && -n "$title$app" ]]; then
+                    hash=$(bash_hash "$app|$title")
+                    id="GNA-${hash}"
+                fi
             fi
         fi
         echo "$id"; echo "$title"; echo "$app"
@@ -535,6 +671,10 @@ main() {
                 calculate_todays_most_used_apps
                 exit 0
                 ;;
+            --disable-gnome-extension)
+                USE_GNOME_WINDOWS_EXT=0
+                shift 1
+                ;;
             --debug)
                 DEBUG=1
                 shift 1
@@ -584,6 +724,8 @@ main() {
             local backend_src="none"
             if [[ "$current_window_id" == GWM-* ]]; then
                 backend_src="gnome-gdbus"
+            elif [[ "$current_window_id" == GEX-* ]]; then
+                backend_src="gnome-extension"
             elif [[ "$current_window_id" == GNA-* ]]; then
                 backend_src="gnome-atspi"
             elif [[ "$current_window_id" =~ ^[0-9]+$ ]]; then
@@ -636,7 +778,7 @@ _logger_completions() {
     local cur_word prev_word
     cur_word="${COMP_WORDS[COMP_CWORD]}"
     prev_word="${COMP_WORDS[COMP_CWORD-1]}"
-    local opts="--output-folder --sleep-interval --min-log-duration --process-blacklist --window-blacklist --custom-script --help"
+    local opts="--output-folder --sleep-interval --min-log-duration --process-blacklist --window-blacklist --custom-script --disable-gnome-extension --help"
 
     if [[ ${cur_word} == -* ]]; then
         COMPREPLY=( $(compgen -W "${opts}" -- ${cur_word}) )
