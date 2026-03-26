@@ -4,14 +4,17 @@
 
 # Default values
 OUTPUT_FOLDER="."
-SLEEP_INTERVAL=1 # in seconds
+SLEEP_INTERVAL=2 # in seconds
 MIN_LOG_DURATION=2 # in seconds
 PROCESS_BLACKLIST_REGEX="" # Regex to match process names to ignore, e.g., "gnome-shell|plank"
 WINDOW_BLACKLIST_REGEX=""    # Regex to match window titles to ignore, e.g., "Brave"
 CUSTOM_SCRIPT_FILE="custom_scripts/my_custom_script.sh"        # Path to a custom script file to source.
-ATSPI_REFRESH_SECS=10 # Minimum seconds between AT-SPI probes
+ATSPI_REFRESH_SECS=30 # Minimum seconds between AT-SPI probes
 ATSPI_SKIP_REGEX="forticlient|fortitray|notify|sublime-text|sublime_text|Sublime Text|nemo|nemo-desktop"
 USE_GNOME_WINDOWS_EXT=1 # Prefer window-calls-extended on GNOME Wayland when available
+ENABLE_LOCK_MONITOR=0 # Opt-in lock monitor to reduce DBus wakeups
+ENABLE_MEDIA_TRACKING=1 # Set to 0 to disable media/playerctl polling
+MEDIA_REFRESH_SECS=10 # Minimum seconds between media checks
 
 # --- Functions ---
 
@@ -20,12 +23,15 @@ usage() {
     echo
     echo "Options:"
     echo "  -o, --output-folder FOLDER      Set the output folder for logs. Default is '.'."
-    echo "  -s, --sleep-interval SECONDS    Set the sleep interval in seconds. Default is 1."
+    echo "  -s, --sleep-interval SECONDS    Set the sleep interval in seconds. Default is 2."
     echo "  -m, --min-log-duration SECONDS  Set the minimum duration for an activity to be logged. Default is 2."
     echo "  -p, --process-blacklist REGEX   Regex to match process names to ignore. Default is empty."
     echo "  -w, --window-blacklist REGEX    Regex to match window titles to ignore. Default is empty."
     echo "  -c, --custom-script SCRIPT_PATH Path to a custom script file to source. Default is 'custom_scripts/my_custom_script.sh'."
+    echo "  --enable-lock-monitor           Enable lock-event monitor (GNOME only)."
     echo "  --disable-gnome-extension      Disable window-calls-extended backend on GNOME Wayland."
+    echo "  --disable-media                 Disable media/playerctl tracking."
+    echo "  --media-refresh-secs SECONDS    Set seconds between media checks. Default is 10."
     echo "  --debug                         Print debug info (id/title/app each loop)."
     echo "  --summarize                     Generate today's summary and exit."
     echo "  -h, --help                      Show this help message."
@@ -488,9 +494,9 @@ fetch_media_title() {
 }
 
 handle_media_activity() {
-    # Only check playerctl every 3 seconds to reduce CPU usage
+    # Throttle media polling to reduce DBus/MPRIS wakeups.
     local now=$(date +%s)
-    if (( now - LAST_MEDIA_CHECK < 3 )); then
+    if (( now - LAST_MEDIA_CHECK < MEDIA_REFRESH_SECS )); then
         return
     fi
     LAST_MEDIA_CHECK=$now
@@ -623,6 +629,9 @@ log_message() {
 
 cleanup() {
     echo -e "\nStopping window logger."
+    if [[ -n "${LOCK_MONITOR_PID:-}" ]] && kill -0 "$LOCK_MONITOR_PID" 2>/dev/null; then
+        kill "$LOCK_MONITOR_PID" 2>/dev/null || true
+    fi
     # Log the duration of the last activity before exiting
     log_previous_activity
     # Generate summary statistics before custom cleanup
@@ -666,6 +675,10 @@ main() {
                 CUSTOM_SCRIPT_FILE="$2"
                 shift 2
                 ;;
+            --enable-lock-monitor)
+                ENABLE_LOCK_MONITOR=1
+                shift 1
+                ;;
             --summarize)
                 check_output_folder
                 calculate_todays_most_used_apps
@@ -674,6 +687,14 @@ main() {
             --disable-gnome-extension)
                 USE_GNOME_WINDOWS_EXT=0
                 shift 1
+                ;;
+            --disable-media)
+                ENABLE_MEDIA_TRACKING=0
+                shift 1
+                ;;
+            --media-refresh-secs)
+                MEDIA_REFRESH_SECS="$2"
+                shift 2
                 ;;
             --debug)
                 DEBUG=1
@@ -701,8 +722,20 @@ main() {
 
     check_output_folder
 
-    # Start listening for screen lock events in the background
-    handle_lock_events &
+    if [[ ! "$MEDIA_REFRESH_SECS" =~ ^[0-9]+$ ]] || (( MEDIA_REFRESH_SECS < 1 )); then
+        echo "Error: --media-refresh-secs must be a positive integer." >&2
+        exit 1
+    fi
+
+    if (( ENABLE_LOCK_MONITOR == 1 )); then
+        if (( IS_GNOME == 1 )); then
+            # Optional DBus monitor; disabled by default to reduce wakeups.
+            handle_lock_events &
+            LOCK_MONITOR_PID=$!
+        else
+            echo "Note: --enable-lock-monitor is only supported on GNOME sessions; skipping." >&2
+        fi
+    fi
 
     # Initialize with the current active window at script start
     get_active_window_info previous_window_id previous_window_title previous_app_name
@@ -766,7 +799,9 @@ main() {
             on_loop_interval "$current_app_name" "$current_window_title" # user-defined external function call
         fi
 
-        handle_media_activity
+        if (( ENABLE_MEDIA_TRACKING == 1 )); then
+            handle_media_activity
+        fi
 
         sleep "$SLEEP_INTERVAL"
     done
@@ -778,7 +813,7 @@ _logger_completions() {
     local cur_word prev_word
     cur_word="${COMP_WORDS[COMP_CWORD]}"
     prev_word="${COMP_WORDS[COMP_CWORD-1]}"
-    local opts="--output-folder --sleep-interval --min-log-duration --process-blacklist --window-blacklist --custom-script --disable-gnome-extension --help"
+    local opts="--output-folder --sleep-interval --min-log-duration --process-blacklist --window-blacklist --custom-script --enable-lock-monitor --disable-gnome-extension --disable-media --media-refresh-secs --help"
 
     if [[ ${cur_word} == -* ]]; then
         COMPREPLY=( $(compgen -W "${opts}" -- ${cur_word}) )
@@ -823,6 +858,7 @@ CACHED_GNOME_APP=""
 LAST_GDBUS_CHECK=0
 LAST_ATSPI_CHECK=0
 LAST_MEDIA_CHECK=0
+LOCK_MONITOR_PID=""
 
 check_dependencies
 init_env_flags

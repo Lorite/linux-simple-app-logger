@@ -129,6 +129,9 @@ For a full list of options, you can use the `--help` flag:
 Key options:
 
 - `--debug`: Print debug info (window id/title/app) each loop.
+- `--disable-media`: Disable media polling (`playerctl`) to reduce background wakeups.
+- `--media-refresh-secs`: Increase/decrease media polling interval (default `10`).
+- `--enable-lock-monitor`: Enable GNOME lock-event monitoring (disabled by default).
 
 ### Running on Startup
 
@@ -184,14 +187,31 @@ You can configure the script's behavior using command-line arguments.
 | Argument                | Description                                                              | Default |
 | ----------------------- | ------------------------------------------------------------------------ | ------- |
 | `-o`, `--output-folder`   | Set the output folder for logs.                                          | `.`     |
-| `-s`, `--sleep-interval`  | Set the sleep interval in seconds.                                       | `1`     |
+| `-s`, `--sleep-interval`  | Set the sleep interval in seconds.                                       | `2`     |
 | `-m`, `--min-log-duration`| Set the minimum duration for an activity to be logged.                   | `2`     |
 | `-p`, `--process-blacklist`| Regex to match process names to ignore.                                  | `""`    |
 | `-w`, `--window-blacklist`| Regex to match window titles to ignore.                                  | `""`    |
-| `-c`, `--custom-script`   | Path to a custom script file to source.                                  | `""`    |
+| `-c`, `--custom-script`   | Path to a custom script file to source.                                  | `custom_scripts/my_custom_script.sh` |
+| `--enable-lock-monitor`   | Enable GNOME lock-event monitor (off by default for lower CPU).          | `off`   |
 | `--disable-gnome-extension` | Disable the GNOME `window-calls-extended` backend and use fallback detection. |         |
+| `--disable-media`         | Disable media/playerctl tracking.                                         | `off`   |
+| `--media-refresh-secs`    | Set seconds between media checks.                                         | `10`    |
 | `--debug`                 | Print debug info each loop (id/title/app).                               |         |
 | `-h`, `--help`            | Show the help message.                                                   |         |
+
+### Performance Tuning
+
+If you see high CPU in desktop helper processes, start with these options:
+
+```bash
+./window_logger.sh -s 2 --disable-media
+```
+
+For GNOME Wayland, only enable lock monitoring if you explicitly need lock-triggered cleanup:
+
+```bash
+./window_logger.sh --enable-lock-monitor
+```
 
 ### Wayland/X11 Behavior
 

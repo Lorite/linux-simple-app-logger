@@ -463,8 +463,10 @@ stop_activity() {
 }
 
 update_youtube_activity_duration() {
-    local player_status
-    player_status=$(playerctl status 2>/dev/null)
+    local player_status="$1"
+    if [[ -z "$player_status" ]]; then
+        player_status=$(playerctl status 2>/dev/null)
+    fi
 
     if [[ "$player_status" == "Playing" && -n "${running_activities["YouTube"]}" ]]; then
         local state_data="${running_activities["YouTube"]}"
@@ -491,10 +493,10 @@ on_loop_interval() {
     local current_time
     current_time=$(date +%s)
 
-    update_youtube_activity_duration
-
     local player_status
     player_status=$(playerctl status 2>/dev/null)
+
+    update_youtube_activity_duration "$player_status"
 
     local current_activity_info
     current_activity_info=$(get_activity_info "$current_app_name" "$current_window_title")
